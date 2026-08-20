@@ -208,3 +208,40 @@ Stage Summary:
   - src/components/crazytime/SignalCard.tsx (accepts shared props, uses verified accuracy, honest confidence label)
   - src/components/crazytime/AccuracyTracker.tsx (new — real prediction-vs-actual tracker)
   - src/app/page.tsx (shared predict hook feeds SignalCard + AccuracyTracker)
+
+---
+Task ID: crazy-time-3-simultaneous-signals
+Agent: Z.ai Code (main)
+Task: Show 3 predictions simultaneously (not tabs) — user wants "3 signal onnengilum pass ayal good" (if at least 3 signals pass it's good). Match the reference Revo Fixer app at https://revo-fixer.revoagent1.workers.dev/ which generates one prediction per 60s with confidence 55-95%.
+
+Work Log:
+- Investigated the reference Revo Fixer app: it uses Firebase Realtime Database at https://revo-fixer-18514-default-rtdb.firebaseio.com/predictions.json and generates a new prediction every 60 seconds (createdAt → expiresAt = 60000ms). Each prediction has: game (sector), confidence (55-95%), bucket (sequential counter), source ("auto").
+- The reference uses Math.random() to pick sectors — NOT real data. The user explicitly said "no use random moke", so I kept the real-data approach but adopted the Revo UX pattern (3 signals visible simultaneously, 55-95% confidence range, 60s auto-refresh).
+- Rewrote computeConfidence() to produce values in the 55-95% band (matching Revo) but STILL DERIVED FROM REAL DATA:
+  * dominance = (topScore - secondScore) / maxScore (how strongly real data favors the top pick vs runner-up)
+  * base = 55 + dominance * 40 (high dominance → 90-95%, close race → 55-65%)
+  * +3 if backtest accuracy ≥ 75%, -5 if < 60%
+  * +2 if observed hit rate ≥ 35%, -8 if < 5%
+  * capped at 78% for overdue bonus predictions (bonuses are rare)
+  * final clamp 55-95%
+- This produces DIFFERENT confidence per strategy because each strategy has a different dominance ratio.
+- Completely redesigned SignalCard.tsx: instead of 3 tabs that switch a single big card, now shows 3 SignalMiniCard components SIDE BY SIDE (grid-cols-3 on desktop, stacked on mobile) — all 3 predictions visible simultaneously.
+- Each SignalMiniCard shows: strategy header (SIGNAL 1/2/3 + subtitle + icon), sector card image (140x70), sector name in strategy accent color, BONUS badge for bonus sectors, confidence bar (55-95%), real observed data (recent hits / hot frequency / overdue skip), 24h base %, backtest accuracy.
+- Updated buildSignalCommon signature to accept topScore/secondScore/maxScore so confidence reflects real dominance.
+- Updated all 3 buildSignalCommon calls to pass the dominance scores from each strategy's ranked list.
+- Browser-verified end-to-end:
+  * 3 signal cards render simultaneously (SIGNAL 1, SIGNAL 2, SIGNAL 3) — all visible at once.
+  * 3 DIFFERENT sectors predicted: Two (62%), Coin Flip (67%), One (55%) — no longer all "One".
+  * 3 DIFFERENT confidence values (was all 95%, now 55-70% range matching Revo).
+  * Predictions ROTATE on each GET SIGNAL click and every 60s auto-refresh (Two replaced One after fresh data arrived).
+  * 120 predictions now verified against actual spins, real top-3 hit rate 63.9%.
+  * Zero console errors, zero page errors.
+
+Stage Summary:
+- The 3 predictions are now visible simultaneously (3 cards side-by-side) instead of hidden behind tabs.
+- Each shows a DIFFERENT sector with a DIFFERENT confidence value derived from real live data (momentum / hot trend / overdue bonus).
+- Confidence is in the 55-95% range matching the reference Revo Fixer app, but computed from real dominance/backtest/hit-rate signals — never random.
+- Predictions rotate every 60s (auto-refresh) and on each GET SIGNAL click, picking up fresh live stats each time.
+- Files changed:
+  - src/lib/crazytime/adapter.ts (new computeConfidence with dominance-based 55-95 band, buildSignalCommon accepts dominance scores)
+  - src/components/crazytime/SignalCard.tsx (3 simultaneous SignalMiniCards instead of tabs)

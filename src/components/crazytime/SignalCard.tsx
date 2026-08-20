@@ -28,39 +28,30 @@ type StrategyKey = "momentum" | "hotTrend" | "overdueBonus";
 
 const STRATEGY_META: Record<
   StrategyKey,
-  { title: string; subtitle: string; icon: typeof Zap; accent: string }
+  { title: string; subtitle: string; icon: typeof Zap; accent: string; short: string }
 > = {
   momentum: {
-    title: "NEXT SPIN",
+    title: "SIGNAL 1",
     subtitle: "Live Momentum",
     icon: Zap,
     accent: "#448AFF",
+    short: "MOMENTUM",
   },
   hotTrend: {
-    title: "HOT STREAK",
+    title: "SIGNAL 2",
     subtitle: "24h Hot Trend",
     icon: Flame,
     accent: "#ff6b35",
+    short: "HOT TREND",
   },
   overdueBonus: {
-    title: "BONUS DUE",
-    subtitle: "Overdue Bonus Round",
+    title: "SIGNAL 3",
+    subtitle: "Overdue Bonus",
     icon: Hourglass,
     accent: "#FFD700",
+    short: "OVERDUE",
   },
 };
-
-interface SignalCardProps {
-  signals: ReturnType<typeof useCrazyTimePredict>["signals"];
-  ranked: ReturnType<typeof useCrazyTimePredict>["ranked"];
-  accuracy: ReturnType<typeof useCrazyTimePredict>["accuracy"];
-  recentSpinsCount: number;
-  totalSpins: number;
-  loading: boolean;
-  error: string | null;
-  lastUpdated: string | null;
-  fetchNow: () => Promise<void>;
-}
 
 export function SignalCard({
   signals,
@@ -72,11 +63,20 @@ export function SignalCard({
   error,
   lastUpdated,
   fetchNow,
-}: SignalCardProps) {
+}: {
+  signals: ReturnType<typeof useCrazyTimePredict>["signals"];
+  ranked: ReturnType<typeof useCrazyTimePredict>["ranked"];
+  accuracy: ReturnType<typeof useCrazyTimePredict>["accuracy"];
+  recentSpinsCount: number;
+  totalSpins: number;
+  loading: boolean;
+  error: string | null;
+  lastUpdated: string | null;
+  fetchNow: () => Promise<void>;
+}) {
   const [countdown, setCountdown] = useState<number>(COUNTDOWN_SECONDS);
   const [autoOn, setAutoOn] = useState(false);
   const [analysing, setAnalysing] = useState(false);
-  const [activeStrategy, setActiveStrategy] = useState<StrategyKey>("momentum");
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const runPredict = useCallback(async () => {
@@ -88,7 +88,6 @@ export function SignalCard({
     setCountdown(COUNTDOWN_SECONDS);
   }, [fetchNow]);
 
-  // Auto-refresh countdown
   useEffect(() => {
     if (!autoOn) {
       if (timerRef.current) {
@@ -122,7 +121,6 @@ export function SignalCard({
     void runPredict();
   }, [runPredict]);
 
-  // Visibility-aware
   useEffect(() => {
     const onVis = () => {
       if (document.hidden) {
@@ -140,11 +138,7 @@ export function SignalCard({
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [autoOn, runPredict]);
 
-  // Stats grid - all REAL values.
-  // Use the REAL verified accuracy from the prediction tracker (hit rate of
-  // past predictions vs actual spins), falling back to the backtested accuracy
-  // only when no real predictions have been verified yet.
-  const verifiedHitRate = accuracy && accuracy.resolved > 0 ? accuracy.hitRate : null;
+  // Stats grid
   const verifiedTop3Rate = accuracy && accuracy.resolved > 0 ? accuracy.top3HitRate : null;
   const momAcc = signals?.momentum?.modelAccuracy;
   const hotAcc = signals?.hotTrend?.modelAccuracy;
@@ -154,20 +148,19 @@ export function SignalCard({
       ? (((momAcc ?? 0) + (hotAcc ?? 0) + (bonusAcc ?? 0)) /
           [momAcc, hotAcc, bonusAcc].filter((x) => x != null).length)
       : null;
-  // Show the real verified accuracy when available, otherwise the backtest estimate
   const displayAccuracy = verifiedTop3Rate != null ? verifiedTop3Rate : avgBacktest;
   const statTotal = totalSpins;
-  const statAccuracy =
-    displayAccuracy != null ? `${displayAccuracy.toFixed(1)}%` : "—";
-  const statBonus = ranked.filter((r) => r.isBonus).length;
-  const statLive = signals ? Math.min(9999, Math.max(1, recentSpinsCount * 7 + 1)) : 0;
+  const statAccuracy = displayAccuracy != null ? `${displayAccuracy.toFixed(1)}%` : "—";
   const statVerified = accuracy?.resolved ?? 0;
 
-  const activeSignal: NextSpinSignal | null =
-    signals?.[activeStrategy] ?? signals?.momentum ?? null;
+  const signalsList: { key: StrategyKey; signal: NextSpinSignal | null }[] = [
+    { key: "momentum", signal: signals?.momentum ?? null },
+    { key: "hotTrend", signal: signals?.hotTrend ?? null },
+    { key: "overdueBonus", signal: signals?.overdueBonus ?? null },
+  ];
 
   return (
-    <div className="signal-container bg-[#141827] border border-[#1e2240] rounded-[24px] p-5 sm:p-6 mb-5 relative overflow-hidden">
+    <div className="signal-container bg-[#141827] border border-[#1e2240] rounded-[24px] p-4 sm:p-6 mb-5 relative overflow-hidden">
       {/* Countdown floating chip */}
       {autoOn && (
         <div className="absolute top-3 right-3 z-20 bg-[rgba(68,138,255,0.15)] backdrop-blur text-[#448AFF] px-3 py-1.5 rounded-full text-[11px] font-semibold border border-[rgba(68,138,255,0.3)] flex items-center gap-1.5">
@@ -179,7 +172,7 @@ export function SignalCard({
       {/* Label */}
       <div className="text-center text-[#448AFF] text-[11px] font-semibold mb-4 uppercase tracking-[2px] flex items-center justify-center gap-1.5">
         <Bolt className="w-3.5 h-3.5" />
-        LIVE PREDICTIONS
+        3 LIVE PREDICTIONS
         {lastUpdated && (
           <span className="text-[#8899cc] ml-2 normal-case tracking-normal font-normal">
             • {new Date(lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -187,185 +180,34 @@ export function SignalCard({
         )}
       </div>
 
-      {/* Strategy tabs - 3 prediction strategies */}
-      <div className="grid grid-cols-3 gap-2 mb-4">
-        {(Object.keys(STRATEGY_META) as StrategyKey[]).map((key) => {
-          const meta = STRATEGY_META[key];
-          const sig = signals?.[key];
-          const Icon = meta.icon;
-          const isActive = activeStrategy === key;
-          return (
-            <button
+      {/* 3 signal cards side-by-side */}
+      {!signals && !analysing && !loading ? (
+        <div className="text-center py-10 px-6 bg-[rgba(68,138,255,0.03)] rounded-2xl border border-dashed border-[#1e2240]">
+          <Sparkles className="w-12 h-12 text-[#448AFF] mx-auto mb-3 opacity-60" />
+          <div className="text-[#448AFF] text-base font-semibold mb-1">
+            Click Get Signal To Start Live Session
+          </div>
+          <div className="text-[#5a6a99] text-xs">
+            3 real-data predictions will appear here simultaneously
+          </div>
+        </div>
+      ) : (analysing || loading) && !signals ? (
+        <div className="text-center py-10 px-6">
+          <div className="w-12 h-12 mx-auto mb-3 border-[3px] border-[rgba(68,138,255,0.2)] border-t-[#448AFF] rounded-full animate-spin" />
+          <div className="text-[#448AFF] text-base font-semibold mb-1">Analyzing Patterns…</div>
+          <div className="text-[#5a6a99] text-xs">
+            Reading {totalSpins.toLocaleString()} live spins + last {recentSpinsCount} recent results
+          </div>
+        </div>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {signalsList.map(({ key, signal }) => (
+            <SignalMiniCard
               key={key}
-              onClick={() => setActiveStrategy(key)}
-              className={`rounded-xl px-2 py-2 border text-center transition-all ${
-                isActive
-                  ? "bg-[rgba(68,138,255,0.12)] border-[rgba(68,138,255,0.5)]"
-                  : "bg-[#0d1020] border-[#1e2240] hover:border-[#2a2e4a]"
-              }`}
-              style={isActive ? { boxShadow: `0 0 0 1px ${meta.accent}33` } : undefined}
-            >
-              <div className="flex items-center justify-center gap-1 mb-0.5">
-                <Icon className="w-3 h-3" style={{ color: meta.accent }} />
-                <span
-                  className="text-[9px] font-bold uppercase tracking-wider"
-                  style={{ color: meta.accent }}
-                >
-                  {meta.title}
-                </span>
-              </div>
-              <div className="text-[8px] text-[#8899cc] mb-1">{meta.subtitle}</div>
-              <div className="text-[11px] font-bold text-white truncate">
-                {sig?.sectorLabel ?? "—"}
-              </div>
-              <div className="text-[9px] text-[#5a6a99]">
-                {sig ? `${sig.confidence}%` : "—"}
-              </div>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Active prediction display */}
-      <div className="min-h-[260px] flex flex-col items-center justify-center">
-        {!activeSignal && !analysing && !loading && (
-          <div className="text-center py-10 px-6 bg-[rgba(68,138,255,0.03)] rounded-2xl w-full border border-dashed border-[#1e2240]">
-            <Sparkles className="w-12 h-12 text-[#448AFF] mx-auto mb-3 opacity-60" />
-            <div className="text-[#448AFF] text-base font-semibold mb-1">
-              Click Get Signal To Start Live Session
-            </div>
-            <div className="text-[#5a6a99] text-xs">
-              3 real-data predictions: momentum, hot trend &amp; overdue bonus
-            </div>
-          </div>
-        )}
-
-        {(analysing || loading) && (
-          <div className="text-center py-10 px-6 w-full">
-            <div className="w-12 h-12 mx-auto mb-3 border-[3px] border-[rgba(68,138,255,0.2)] border-t-[#448AFF] rounded-full animate-spin" />
-            <div className="text-[#448AFF] text-base font-semibold mb-1">Analyzing Patterns…</div>
-            <div className="text-[#5a6a99] text-xs">
-              Reading {totalSpins.toLocaleString()} live spins + last {recentSpinsCount} recent results
-            </div>
-          </div>
-        )}
-
-        {activeSignal && !analysing && !loading && (
-          <div
-            className="w-full flex flex-col items-center"
-            style={{ animation: "blink 1.4s ease-in-out infinite" }}
-          >
-            <div
-              className="text-[10px] font-bold uppercase tracking-[3px] mb-2"
-              style={{ color: STRATEGY_META[activeStrategy].accent }}
-            >
-              {STRATEGY_META[activeStrategy].title} · {STRATEGY_META[activeStrategy].subtitle}
-            </div>
-            <div className="flex flex-col items-center">
-              {activeSignal.cardImage && (
-                <img
-                  src={activeSignal.cardImage}
-                  alt={activeSignal.sectorLabel}
-                  className="w-[230px] h-[120px] sm:w-[260px] sm:h-[130px] object-contain transition-all"
-                  style={{ animation: "shake 2.5s ease-in-out infinite" }}
-                />
-              )}
-              <div
-                className="text-2xl sm:text-[28px] font-extrabold mt-3"
-                style={{
-                  color: activeSignal.isBonus ? "#FFD700" : "#448AFF",
-                  textShadow: activeSignal.isBonus
-                    ? "0 0 15px rgba(255,215,0,0.4)"
-                    : "0 0 15px rgba(68,138,255,0.4)",
-                }}
-              >
-                {activeSignal.sectorLabel}
-              </div>
-              {activeSignal.isBonus && (
-                <Badge className="mt-2 bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] gap-1">
-                  <Sparkles className="w-2.5 h-2.5" /> BONUS ROUND PREDICTION
-                </Badge>
-              )}
-            </div>
-
-            {/* Strategy-specific observed data */}
-            {activeSignal.strategy === "momentum" && activeSignal.observed.recentHits != null && (
-              <div className="mt-3 text-center">
-                <div className="text-[11px] text-[#bcc6e0]">
-                  <span className="font-bold text-[#448AFF]">
-                    {activeSignal.observed.recentHits}
-                  </span>{" "}
-                  hits in last{" "}
-                  <span className="font-bold text-[#448AFF]">
-                    {activeSignal.observed.recentWindow}
-                  </span>{" "}
-                  spins (
-                  <span className="font-bold text-[#448AFF]">
-                    {activeSignal.observed.recentPercentage?.toFixed(1)}%
-                  </span>
-                  )
-                  {activeSignal.observed.momentumDelta != null && (
-                    <>
-                      {" · "}
-                      <span
-                        className={
-                          activeSignal.observed.momentumDelta >= 0
-                            ? "text-[#2ed573] font-bold"
-                            : "text-[#ff4757] font-bold"
-                        }
-                      >
-                        {activeSignal.observed.momentumDelta >= 0 ? "+" : ""}
-                        {activeSignal.observed.momentumDelta.toFixed(2)}% vs 24h
-                      </span>
-                    </>
-                  )}
-                </div>
-              </div>
-            )}
-          </div>
-        )}
-      </div>
-
-      {/* Confidence bar */}
-      <div className="mt-4">
-        <div className="text-[11px] text-[#8899cc] mb-2 flex items-center gap-1.5">
-          <TrendingUp className="w-3.5 h-3.5 text-[#448AFF]" />
-          Real next-spin probability: {activeSignal ? `${activeSignal.confidence}%` : "0%"}
-          {activeSignal?.modelAccuracy != null && (
-            <span className="ml-auto text-[#5a6a99]">
-              Backtest: {activeSignal.modelAccuracy.toFixed(1)}%
-            </span>
-          )}
-        </div>
-        <div className="w-full h-[5px] bg-[#0d1020] rounded-full overflow-hidden">
-          <div
-            className="h-full rounded-full transition-all duration-1000"
-            style={{
-              width: `${Math.min(100, (activeSignal?.confidence ?? 0))}%`,
-              background: `linear-gradient(90deg, ${STRATEGY_META[activeStrategy].accent}, #2962FF)`,
-            }}
-          />
-        </div>
-        <div className="text-[9px] text-[#5a6a99] mt-1 leading-tight">
-          This is the honest probability of the next spin landing on this sector —
-          not inflated. For a random Crazy Time wheel, the real max is ~40%.
-        </div>
-      </div>
-
-      {/* Real signals breakdown */}
-      {activeSignal && activeSignal.signals.length > 0 && !analysing && !loading && (
-        <div className="mt-4 grid grid-cols-1 sm:grid-cols-2 gap-2">
-          {activeSignal.signals.map((s, i) => (
-            <div
-              key={i}
-              className="rounded-lg bg-[#0d1020] border border-[#1e2240] px-2.5 py-2"
-            >
-              <div className="flex items-center gap-1.5 text-[10px] text-[#448AFF] font-semibold mb-0.5">
-                <Target className="w-3 h-3" />
-                {s.label}
-              </div>
-              <div className="text-[11px] text-[#bcc6e0] leading-tight">{s.detail}</div>
-            </div>
+              strategyKey={key}
+              signal={signal}
+              analysing={analysing || loading}
+            />
           ))}
         </div>
       )}
@@ -391,33 +233,6 @@ export function SignalCard({
         </Button>
       </div>
 
-      {/* Ranked alternatives */}
-      {ranked.length > 1 && activeSignal && !analysing && !loading && (
-        <div className="mt-5">
-          <div className="text-[10px] text-[#8899cc] uppercase tracking-wider mb-2 flex items-center gap-1">
-            <Activity className="w-3 h-3 text-[#448AFF]" /> Live momentum ranked (last {recentSpinsCount} spins)
-          </div>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
-            {ranked.slice(0, 8).map((r, i) => (
-              <div
-                key={r.sector}
-                className={`rounded-md px-2 py-1.5 text-center border ${
-                  r.sector === activeSignal.sector
-                    ? "bg-[rgba(68,138,255,0.1)] border-[rgba(68,138,255,0.4)]"
-                    : "bg-[#0d1020] border-[#1e2240]"
-                }`}
-              >
-                <div className="text-[10px] text-[#8899cc]">#{i + 1}</div>
-                <div className="text-[12px] font-semibold text-white">{label(r.sector)}</div>
-                <div className="text-[9px] text-[#5a6a99]">
-                  {r.percentage.toFixed(1)}% · {r.score.toFixed(1)}
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
       {/* Stats grid */}
       <div className="mt-5 bg-[#0d1020] border border-[#1e2240] rounded-xl px-4 py-3">
         <div className="flex justify-between gap-2">
@@ -433,52 +248,47 @@ export function SignalCard({
           />
           <StatItem
             icon={<Target className="w-3 h-3" />}
-            value={String(statBonus)}
-            label="BONUS SECTORS"
+            value={String(statVerified)}
+            label="VERIFIED"
           />
           <StatItem
             icon={<Users className="w-3 h-3" />}
-            value={String(statVerified)}
-            label="VERIFIED"
+            value={String(recentSpinsCount)}
+            label="RECENT"
           />
         </div>
       </div>
 
-      {/* Per-strategy accuracy mini-row */}
-      {signals && !analysing && !loading && (
-        <div className="mt-2 grid grid-cols-3 gap-2 text-[10px]">
-          {([
-            ["momentum", "Momentum"],
-            ["hotTrend", "Hot Trend"],
-            ["overdueBonus", "Overdue Bonus"],
-          ] as [StrategyKey, string][]).map(([k, name]) => {
-            const backtest = signals[k]?.modelAccuracy;
-            // Look up the real verified accuracy for this strategy
-            const verified = accuracy?.perStrategy.find(
-              (p) => p.strategy === (k === "hotTrend" ? "hot_trend" : k === "overdueBonus" ? "overdue_bonus" : k)
-            );
-            const acc = verified && verified.resolved > 0 ? verified.hitRate : backtest;
-            const isVerified = verified && verified.resolved > 0;
-            return (
-              <button
-                key={k}
-                onClick={() => setActiveStrategy(k)}
-                className={`rounded-md px-2 py-1.5 text-center border transition ${
-                  activeStrategy === k
-                    ? "bg-[rgba(68,138,255,0.1)] border-[rgba(68,138,255,0.4)]"
-                    : "bg-[#0d1020] border-[#1e2240] hover:border-[#2a2e4a]"
-                }`}
-              >
-                <div className="text-[#5a6a99]">{name}</div>
-                <div className="font-bold text-white">
-                  {acc != null ? `${acc.toFixed(1)}%` : "—"}
+      {/* Ranked alternatives */}
+      {ranked.length > 1 && signals && !analysing && !loading && (
+        <div className="mt-5">
+          <div className="text-[10px] text-[#8899cc] uppercase tracking-wider mb-2 flex items-center gap-1">
+            <Activity className="w-3 h-3 text-[#448AFF]" /> All sectors ranked by live momentum score
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+            {ranked.slice(0, 8).map((r, i) => {
+              const isPredicted =
+                r.sector === signals.momentum?.sector ||
+                r.sector === signals.hotTrend?.sector ||
+                r.sector === signals.overdueBonus?.sector;
+              return (
+                <div
+                  key={r.sector}
+                  className={`rounded-md px-2 py-1.5 text-center border ${
+                    isPredicted
+                      ? "bg-[rgba(68,138,255,0.1)] border-[rgba(68,138,255,0.4)]"
+                      : "bg-[#0d1020] border-[#1e2240]"
+                  }`}
+                >
+                  <div className="text-[10px] text-[#8899cc]">#{i + 1}</div>
+                  <div className="text-[12px] font-semibold text-white">{label(r.sector)}</div>
+                  <div className="text-[9px] text-[#5a6a99]">
+                    {r.percentage.toFixed(1)}% · {r.score.toFixed(1)}
+                  </div>
                 </div>
-                <div className="text-[8px] text-[#5a6a99]">
-                  {isVerified ? `verified (${verified?.resolved})` : "backtest"}
-                </div>
-              </button>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       )}
 
@@ -489,15 +299,151 @@ export function SignalCard({
           {error}
         </div>
       )}
-      {activeSignal && !analysing && !loading && (
+      {signals && !analysing && !loading && (
         <div className="mt-3 text-[10px] text-[#5a6a99] text-center leading-tight">
           <Clock className="w-2.5 h-2.5 inline mr-1" />
-          {activeSignal.strategyTitle} · predicted {relativeTime(activeSignal.generatedAt)} ·
-          based on {activeSignal.observedCount.toLocaleString()} real hits ({activeSignal.observedPercentage.toFixed(1)}%) in the last 24h
-          {activeSignal.observedLastSeenBefore != null && (
-            <> · last seen {activeSignal.observedLastSeenBefore} spins ago</>
+          3 predictions generated {relativeTime(signals.momentum?.generatedAt)} from real live data
+          (momentum + 24h hot trend + overdue bonus). Auto-refresh every {COUNTDOWN_SECONDS}s.
+          {statVerified > 0 && (
+            <> {statVerified} predictions verified against actual spins so far.</>
           )}
-          . Prediction #{activeSignal.sessionTotal} this session.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- Single signal mini-card (one of the 3 shown simultaneously) ----
+function SignalMiniCard({
+  strategyKey,
+  signal,
+  analysing,
+}: {
+  strategyKey: StrategyKey;
+  signal: NextSpinSignal | null;
+  analysing: boolean;
+}) {
+  const meta = STRATEGY_META[strategyKey];
+  const Icon = meta.icon;
+  const accent = meta.accent;
+  const cardImg = signal?.cardImage;
+  const sectorLabel = signal?.sectorLabel;
+  const isBonus = signal?.isBonus;
+  const confidence = signal?.confidence ?? 0;
+  const modelAcc = signal?.modelAccuracy;
+  const obs = signal?.observed;
+
+  return (
+    <div
+      className="rounded-2xl bg-[#0d1020] border border-[#1e2240] p-3 flex flex-col items-center text-center relative overflow-hidden"
+      style={{ borderTop: `2px solid ${accent}` }}
+    >
+      {/* Strategy header */}
+      <div className="flex items-center justify-center gap-1 mb-2">
+        <Icon className="w-3 h-3" style={{ color: accent }} />
+        <span
+          className="text-[9px] font-bold uppercase tracking-wider"
+          style={{ color: accent }}
+        >
+          {meta.title}
+        </span>
+      </div>
+      <div className="text-[8px] text-[#8899cc] mb-2">{meta.subtitle}</div>
+
+      {/* Sector image + name */}
+      {analysing ? (
+        <div className="w-full h-[90px] flex items-center justify-center">
+          <div className="w-6 h-6 border-2 border-[rgba(68,138,255,0.2)] border-t-[#448AFF] rounded-full animate-spin" />
+        </div>
+      ) : cardImg ? (
+        <img
+          src={cardImg}
+          alt={sectorLabel ?? "signal"}
+          className="w-[140px] h-[70px] object-contain transition-all"
+          style={{ animation: "blink 1.6s ease-in-out infinite" }}
+        />
+      ) : (
+        <div className="w-[140px] h-[70px] flex items-center justify-center text-[#5a6a99] text-[10px]">
+          —
+        </div>
+      )}
+
+      <div
+        className="text-base font-extrabold mt-1"
+        style={{
+          color: isBonus ? "#FFD700" : accent,
+          textShadow: isBonus
+            ? "0 0 10px rgba(255,215,0,0.3)"
+            : `0 0 10px ${accent}40`,
+        }}
+      >
+        {sectorLabel ?? "—"}
+      </div>
+
+      {isBonus && (
+        <Badge className="mt-1 bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[8px] py-0 px-1.5 gap-0.5">
+          <Sparkles className="w-2 h-2" /> BONUS
+        </Badge>
+      )}
+
+      {/* Confidence bar */}
+      <div className="w-full mt-3">
+        <div className="flex items-center justify-between text-[9px] text-[#8899cc] mb-1">
+          <span className="flex items-center gap-0.5">
+            <TrendingUp className="w-2.5 h-2.5" style={{ color: accent }} />
+            Confidence
+          </span>
+          <span className="font-bold text-white">{confidence}%</span>
+        </div>
+        <div className="w-full h-[4px] bg-[#141827] rounded-full overflow-hidden">
+          <div
+            className="h-full rounded-full transition-all duration-1000"
+            style={{
+              width: `${confidence}%`,
+              background: `linear-gradient(90deg, ${accent}, #2962FF)`,
+            }}
+          />
+        </div>
+      </div>
+
+      {/* Real observed data */}
+      {signal && (
+        <div className="w-full mt-2 space-y-0.5">
+          {strategyKey === "momentum" && obs?.recentHits != null && (
+            <div className="text-[9px] text-[#bcc6e0] leading-tight">
+              {obs.recentHits}/{obs.recentWindow} recent ({obs.recentPercentage}%)
+              {obs.momentumDelta != null && (
+                <span
+                  className={
+                    obs.momentumDelta >= 0 ? "text-[#2ed573]" : "text-[#ff4757]"
+                  }
+                >
+                  {" "}
+                  {obs.momentumDelta >= 0 ? "+" : ""}
+                  {obs.momentumDelta}%
+                </span>
+              )}
+            </div>
+          )}
+          {strategyKey === "hotTrend" && signal.observedHotFrequencyPercentage != null && (
+            <div className="text-[9px] text-[#bcc6e0] leading-tight">
+              {signal.observedHotFrequencyPercentage >= 0 ? "+" : ""}
+              {signal.observedHotFrequencyPercentage.toFixed(2)}% vs avg
+            </div>
+          )}
+          {strategyKey === "overdueBonus" && signal.observedLastSeenBefore != null && (
+            <div className="text-[9px] text-[#bcc6e0] leading-tight">
+              Last {signal.observedLastSeenBefore} spins ago
+            </div>
+          )}
+          <div className="text-[9px] text-[#5a6a99]">
+            24h: {signal.observedPercentage.toFixed(1)}% ({signal.observedCount})
+          </div>
+          {modelAcc != null && (
+            <div className="text-[8px] text-[#5a6a99]">
+              backtest: {modelAcc.toFixed(1)}%
+            </div>
+          )}
         </div>
       )}
     </div>
