@@ -246,9 +246,15 @@ export function useCrazyTimePredict() {
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/crazytime/predict?size=30&_=${Date.now()}`, {
+      // Force a fresh fetch every time: cache-bust header + unique URL param
+      // + explicit no-store. This ensures each GET SIGNAL click gets NEW data.
+      const res = await fetch(`/api/crazytime/predict?size=200&_=${Date.now()}`, {
         cache: "no-store",
-        headers: { Accept: "application/json" },
+        headers: {
+          Accept: "application/json",
+          "Cache-Control": "no-cache, no-store, must-revalidate",
+          Pragma: "no-cache",
+        },
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const json = (await res.json()) as PredictResponse;

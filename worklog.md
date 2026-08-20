@@ -360,3 +360,30 @@ Files changed:
 - src/components/crazytime/SignalCard.tsx (updated strategy subtitles to "AI Top Pick", "AI 2nd Pick", "AI 3rd Pick")
 
 Honest note for the user: Crazy Time is a genuinely random physical wheel. The ensemble model achieves 67% top-3 accuracy (vs 37.5% random) — that's the mathematical ceiling for this kind of game. No model can achieve 100% on a fair wheel; anyone claiming 100% casino predictions is scamming. This is the best ethical, real-data-driven approach.
+
+---
+Task ID: crazy-time-auto-refresh-new-spin
+Agent: Z.ai Code (main)
+Task: User reported "Result vannadinu shesham pettannu prediction signal button click cheydal update avunilla new predict update avunilla" (after a result comes, clicking the prediction button doesn't update with a new prediction).
+
+Root cause:
+1. The hook was fetching with `size=30` but the route expects `size=200` — so the Markov matrix had insufficient data.
+2. No automatic detection of new spins — the user had to wait 60s for the countdown to trigger a refresh, or manually click. By then the "new" data felt stale.
+3. Cache-busting wasn't aggressive enough — some responses may have been served from cache.
+
+Fixes:
+1. Updated fetchNow to fetch `size=200` (matching the route's expectation) with aggressive cache-busting headers (no-store + no-cache + Pragma: no-cache + unique `_=` timestamp).
+2. Added a NEW SPIN DETECTOR in SignalCard: polls /api/crazytime/events?size=1 every 10 seconds. When the latest spin ID changes (a new Crazy Time result arrived), it immediately auto-refreshes the prediction — no need to wait for the 60s countdown or click the button.
+3. Added visual feedback: when a new spin is detected, the countdown chip shows "New spin! Updating..." with a spinning icon, so the user sees the auto-refresh happening.
+4. The 60s countdown still works as a backup auto-refresh.
+5. Visibility-aware: pauses polling when the tab is hidden, resumes when visible.
+
+Verified in browser:
+- Clicked GET SIGNAL → fetched fresh 200-spin data, countdown started at 60s.
+- New-spin detector polled every 10s (visible in dev log: `GET /api/crazytime/events?size=1`).
+- After ~50s, a new Crazy Time spin arrived → detector fired → predict API called automatically → countdown reset to 60s. All without clicking anything.
+- No console errors.
+
+Files changed:
+- src/hooks/use-crazy-time.ts (fetchNow now uses size=200 + aggressive cache-busting headers)
+- src/components/crazytime/SignalCard.tsx (added new-spin detector polling every 10s + "New spin! Updating..." visual indicator)

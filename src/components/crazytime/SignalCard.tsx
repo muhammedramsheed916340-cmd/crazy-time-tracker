@@ -80,7 +80,10 @@ export function SignalCard({
   const [countdown, setCountdown] = useState<number>(COUNTDOWN_SECONDS);
   const [autoOn, setAutoOn] = useState(false);
   const [analysing, setAnalysing] = useState(false);
+  const [lastSeenSpinId, setLastSeenSpinId] = useState<string | null>(null);
+  const [newSpinDetected, setNewSpinDetected] = useState(false);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const spinCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const runPredict = useCallback(async () => {
     setAnalysing(true);
@@ -89,8 +92,10 @@ export function SignalCard({
     setAnalysing(false);
     setAutoOn(true);
     setCountdown(COUNTDOWN_SECONDS);
+    setNewSpinDetected(false);
   }, [fetchNow]);
 
+  // Countdown timer (60s auto-refresh)
   useEffect(() => {
     if (!autoOn) {
       if (timerRef.current) {
@@ -113,6 +118,51 @@ export function SignalCard({
       timerRef.current = null;
     };
   }, [autoOn, runPredict]);
+
+  // NEW SPIN DETECTOR: poll the events API every 10s. When a new spin arrives
+  // (different ID from the last one we saw), auto-refresh the prediction
+  // immediately so the user always sees predictions based on the LATEST result.
+  useEffect(() => {
+    if (!autoOn) {
+      if (spinCheckRef.current) {
+        clearInterval(spinCheckRef.current);
+        spinCheckRef.current = null;
+      }
+      return;
+    }
+    const checkForNewSpin = async () => {
+      try {
+        const res = await fetch(`/api/crazytime/events?size=1&_=${Date.now()}`, {
+          cache: "no-store",
+          headers: { "Cache-Control": "no-cache" },
+        });
+        if (!res.ok) return;
+        const json = await res.json();
+        const latestId = json?.spins?.[0]?.id;
+        if (!latestId) return;
+        if (lastSeenSpinId === null) {
+          // First load — just record the ID, don't refresh
+          setLastSeenSpinId(latestId);
+          return;
+        }
+        if (latestId !== lastSeenSpinId) {
+          // NEW spin detected! Auto-refresh the prediction immediately.
+          setLastSeenSpinId(latestId);
+          setNewSpinDetected(true);
+          void runPredict();
+        }
+      } catch {
+        // ignore polling errors
+      }
+    };
+    // Check immediately, then every 10s
+    void checkForNewSpin();
+    spinCheckRef.current = setInterval(checkForNewSpin, 10000);
+    return () => {
+      if (spinCheckRef.current) clearInterval(spinCheckRef.current);
+      spinCheckRef.current = null;
+    };
+  }, [autoOn, lastSeenSpinId, runPredict]);
 
   const onGetSignal = useCallback(() => {
     void runPredict();
@@ -167,8 +217,8 @@ export function SignalCard({
       {/* Countdown floating chip */}
       {autoOn && (
         <div className="absolute top-3 right-3 z-20 bg-[rgba(68,138,255,0.15)] backdrop-blur text-[#448AFF] px-3 py-1.5 rounded-full text-[11px] font-semibold border border-[rgba(68,138,255,0.3)] flex items-center gap-1.5">
-          <RefreshCw className="w-3 h-3 animate-spin" />
-          Next: {countdown}s
+          <RefreshCw className={`w-3 h-3 ${newSpinDetected ? "animate-spin" : ""}`} />
+          {newSpinDetected ? "New spin! Updating..." : `Next: ${countdown}s`}
         </div>
       )}
 
