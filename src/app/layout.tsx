@@ -14,24 +14,34 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Z.ai Code Scaffold - AI-Powered Development",
-  description: "Modern Next.js scaffold optimized for AI-powered development with Z.ai. Built with TypeScript, Tailwind CSS, and shadcn/ui.",
-  keywords: ["Z.ai", "Next.js", "TypeScript", "Tailwind CSS", "shadcn/ui", "AI development", "React"],
-  authors: [{ name: "Z.ai Team" }],
+  title: "Crazy Time Live Tracker — Real Spins, Stats & Predictions",
+  description:
+    "Real-time Evolution Gaming Crazy Time live tracker with live spins history, statistics, top slot matches, bonus flapper results, latest top multipliers and prediction insights. 100% live data.",
+  keywords: [
+    "Crazy Time",
+    "Crazy Time Live",
+    "Crazy Time Tracker",
+    "Crazy Time Statistics",
+    "Crazy Time Spins",
+    "Evolution Gaming",
+    "CasinoScores",
+  ],
+  authors: [{ name: "Crazy Time Live Tracker" }],
   icons: {
     icon: "https://z-cdn.chatglm.cn/z-ai/static/logo.svg",
   },
   openGraph: {
-    title: "Z.ai Code Scaffold",
-    description: "AI-powered development with modern React stack",
-    url: "https://chat.z.ai",
-    siteName: "Z.ai",
+    title: "Crazy Time Live Tracker",
+    description:
+      "Real-time Evolution Gaming Crazy Time live spins, statistics and predictions.",
+    siteName: "Crazy Time Live Tracker",
     type: "website",
   },
   twitter: {
     card: "summary_large_image",
-    title: "Z.ai Code Scaffold",
-    description: "AI-powered development with modern React stack",
+    title: "Crazy Time Live Tracker",
+    description:
+      "Real-time Evolution Gaming Crazy Time live spins, statistics and predictions.",
   },
 };
 
