@@ -280,4 +280,20 @@ export interface NextSpinSignal {
   // Real model accuracy computed against recent spins:
   // how often the highest-weighted sector matched the actual next spin in the recent window
   modelAccuracy: number | null;
+  // Identifier of the prediction strategy that produced this signal
+  strategy: PredictionStrategy;
+  // Human-readable title for the strategy
+  strategyTitle: string;
+  // Real observed values used by this strategy (for transparency)
+  observed: {
+    recentHits?: number; // hits in the recent momentum window
+    recentWindow?: number; // size of the momentum window
+    recentPercentage?: number; // % in the recent window
+    momentumDelta?: number; // recent % minus 24h % (positive = heating up)
+  };
 }
+
+export type PredictionStrategy =
+  | "momentum" // weighted by recent spins (live momentum)
+  | "hot_trend" // 24h hot frequency (sectors above long-term average)
+  | "overdue_bonus"; // most-overdue bonus round

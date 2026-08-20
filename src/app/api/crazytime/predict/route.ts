@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchCrazyTimeEvents, fetchCrazyTimeStats } from "@/lib/crazytime/upstream";
-import { normalizeSpins, normalizeStats, buildNextSpinSignal, buildPrediction } from "@/lib/crazytime/adapter";
+import { normalizeSpins, normalizeStats, buildMultiPrediction, buildPrediction } from "@/lib/crazytime/adapter";
 import {
   DEFAULT_DURATION_HOURS,
   DEFAULT_SIZE,
@@ -9,15 +9,13 @@ import {
   DEFAULT_WHEEL_RESULTS_FILTER,
   CRAZY_TIME_TABLE_ID,
 } from "@/lib/crazytime/constants";
-import type { NextSpinSignal } from "@/lib/crazytime/types";
+import type { NextSpinSignal, NormalizedPrediction } from "@/lib/crazytime/types";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
 // In-memory session counter (per server instance). This is real - it counts
 // how many prediction requests have been served since the process started.
-// It is NOT a fake "total users" counter; it's the actual count of API calls
-// to this prediction endpoint.
 let sessionPredictionCount = 0;
 
 export async function GET(req: NextRequest) {
@@ -26,7 +24,8 @@ export async function GET(req: NextRequest) {
   const size = Number(sp.get("size") ?? DEFAULT_SIZE);
 
   try {
-    // Fetch real stats and real recent spins in parallel
+    // Fetch real stats and a larger window of real recent spins in parallel.
+    // We fetch up to 30 recent spins so the momentum strategy has enough data.
     const [statsRaw, eventsRes] = await Promise.all([
       fetchCrazyTimeStats(
         Number.isFinite(durationHours) ? durationHours : DEFAULT_DURATION_HOURS,
@@ -48,13 +47,17 @@ export async function GET(req: NextRequest) {
     const spins = normalizeSpins(eventsRes.items);
     sessionPredictionCount += 1;
 
-    const { signal, ranked } = buildNextSpinSignal(stats, spins, sessionPredictionCount);
-    const predictionSummary = buildPrediction(stats);
+    const multi = buildMultiPrediction(stats, spins, sessionPredictionCount);
+    const predictionSummary: NormalizedPrediction = buildPrediction(stats);
 
     return NextResponse.json(
       {
-        signal,
-        ranked: ranked.slice(0, 8),
+        signals: {
+          momentum: multi.momentum,
+          hotTrend: multi.hotTrend,
+          overdueBonus: multi.overdueBonus,
+        } as Record<string, NextSpinSignal>,
+        ranked: multi.ranked,
         predictionSummary,
         recentSpinsCount: spins.length,
         totalSpins: eventsRes.totalCount,
@@ -70,25 +73,13 @@ export async function GET(req: NextRequest) {
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json(
-      { error: msg, signal: null, ranked: [], fetchedAt: new Date().toISOString() },
+      {
+        error: msg,
+        signals: null,
+        ranked: [],
+        fetchedAt: new Date().toISOString(),
+      },
       { status: 200, headers: { "Cache-Control": "no-store" } }
     );
   }
 }
-
-export type PredictionResponse = {
-  signal: NextSpinSignal;
-  ranked: {
-    sector: string;
-    sectorLabel: string;
-    score: number;
-    percentage: number;
-    hotFrequencyPercentage: number | null;
-    lastSeenBefore: number | null;
-    isBonus: boolean;
-  }[];
-  recentSpinsCount: number;
-  totalSpins: number;
-  fetchedAt: string;
-  error?: string;
-};

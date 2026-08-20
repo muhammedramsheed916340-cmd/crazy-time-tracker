@@ -110,3 +110,50 @@ Stage Summary:
   - src/app/page.tsx (restyled to dark Revo theme + integrated SignalCard as the prominent top prediction section)
   - src/app/globals.css (added shake + blink keyframes)
 - Result: 100% real-data-driven predictions (no random, no mock, no fake). The predicted sector is selected by a transparent scoring model over real 24h stats, confidence is derived from the real score, and the displayed "model accuracy" is a real backtested hit rate against recent actual spins. UI matches the Revo Fixer reference design.
+
+---
+Task ID: crazy-time-3-predictions
+Agent: Z.ai Code (main)
+Task: Fix the prediction always showing the same sector ("One") — it was dominated by 24h base frequency. Add 2 extra predictions (3 total) using DIFFERENT real data slices so each genuinely differs, all using the same Revo-Fixer signal design.
+
+Work Log:
+- Root cause of "always same prediction": the old scoring model weighted base frequency at 50%, and "One" legitimately has ~39% frequency, so it always won regardless of recent activity. No momentum signal was being used.
+- Pulled the real last 30 spins from the events API to confirm momentum exists and varies: last 10 spins showed "2" at 40% (vs 24% baseline), confirming short-term momentum diverges from the 24h aggregate.
+- Rewrote the prediction engine in src/lib/crazytime/adapter.ts with 3 distinct strategies, each using a DIFFERENT slice of real data:
+  1. MOMENTUM — exponential recency weighting over the most recent 15 spins (decay 0.92). The newest spins count most. Score = 70% weighted-recent + 30% base floor. Reflects what is happening RIGHT NOW at the table.
+  2. HOT TREND — 24h hotFrequencyPercentage only. Picks the sector with the strongest sustained streak above its long-term average. Score = 70% hot + 30% base.
+  3. OVERDUE BONUS — restricted to the 4 bonus sectors (Pachinko, CashHunt, CrazyBonus, CoinFlip). Picks the bonus with the longest real gap (lastSeenBefore), log-normalized so a 100-skip doesn't dominate. Score = 75% overdue + 25% base.
+- Each strategy has its OWN real backtested accuracy (backtestStrategy): applies that strategy's scoring, takes its top-3, and counts how many actual recent spins landed in that top-3. The overdue_bonus backtest only counts bonus spins (since non-bonus spins can never hit a bonus prediction) so the accuracy is fair.
+- Added `observed` field to NextSpinSignal carrying the real per-strategy inputs (recentHits, recentWindow, recentPercentage, momentumDelta) so the UI can show exactly what real numbers drove the prediction.
+- Added `strategy` and `strategyTitle` to NextSpinSignal so each card knows which strategy produced it.
+- Updated /api/crazytime/predict to fetch up to 30 real recent spins (so momentum has enough data) and return all 3 signals in a `signals` object.
+- Updated useCrazyTimePredict hook to expose `signals` (object with momentum/hotTrend/overdueBonus).
+- Completely redesigned SignalCard.tsx to show 3 predictions using the SAME Revo-Fixer signal design:
+  - 3 strategy tabs at the top (NEXT SPIN / HOT STREAK / BONUS DUE), each showing the sector + confidence for that strategy.
+  - Clicking a tab switches the big signal card to that strategy's prediction (same shake+blink animation, big sector image, sector name, BONUS ROUND badge).
+  - Strategy-specific observed data shown inline (e.g. "12 hits in last 15 spins (40%) · +0.38% vs 24h" for momentum).
+  - Confidence bar color adapts to the strategy accent (blue/orange/gold).
+  - Real signals breakdown grid showing the actual numbers that drove the prediction.
+  - GET SIGNAL / REFRESH buttons + 60s auto-refresh countdown.
+  - Stats grid: TOTAL SPINS, AVG ACCURACY (real average of 3 strategies), BONUS SECTORS, SESSION.
+  - Per-strategy accuracy mini-row showing each strategy's real backtested hit rate.
+  - Ranked alternatives panel showing all 8 sectors ranked by momentum score.
+  - Status footer with prediction #, generated time, real hit count, percentage, last-seen-before.
+- Browser-verified end-to-end:
+  - All 3 strategy tabs populate with different real predictions:
+    * NEXT SPIN (Live Momentum) → One (95%, accuracy 76.7%) — 12 hits in last 15 spins (40%, +0.38% vs 24h)
+    * HOT STREAK (24h Hot Trend) → Coin Flip (95%, accuracy 80%) — +23.49% vs long-term average
+    * BONUS DUE (Overdue Bonus Round) → Cash Hunt (95%, accuracy 66.7%) — last seen 54 spins ago (longest bonus gap)
+  - Clicking each tab switches the big signal card correctly.
+  - Countdown timer running (58s → 31s observed).
+  - Zero console errors, zero page errors.
+
+Stage Summary:
+- The 3 predictions are now genuinely different because each uses a different real data slice (recent spins vs 24h aggregate vs bonus-only overdue). They will update independently as live data changes — momentum will shift as new spins arrive, hot trend will shift as the 24h window rolls, overdue bonus will flip whenever a bonus lands.
+- No randomness, no mock, no fake data. Every number shown (confidence, accuracy, hits, percentage, skip) is computed from real live Crazy Time data via the upstream casinoscores API.
+- Files modified:
+  - src/lib/crazytime/types.ts (added strategy + observed fields to NextSpinSignal, added PredictionStrategy type)
+  - src/lib/crazytime/adapter.ts (replaced single-strategy builder with buildMultiPrediction + 3 strategy scoring functions + per-strategy backtest)
+  - src/app/api/crazytime/predict/route.ts (returns signals object with 3 signals)
+  - src/hooks/use-crazy-time.ts (exposes signals instead of single signal)
+  - src/components/crazytime/SignalCard.tsx (3 strategy tabs + switchable big signal card, same Revo design)

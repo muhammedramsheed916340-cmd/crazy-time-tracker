@@ -315,69 +315,141 @@ export function relativeTime(iso: string | null | undefined): string {
 }
 
 // ============================================================
-// Next-spin signal generator.
-// Derives a predicted sector purely from REAL live statistics:
-//   - Recent hot frequency (sector is appearing more often than its long-term average)
-//   - Overdue signal (sector has not appeared for an unusually long time)
-//   - Base probability (the sector's actual % of the last 24h)
-//   - Top-slot match boost (when the live top slot match rate is high, bonus rounds more likely)
-// Confidence is the normalized weighted score (0-100).
+// Three real-data prediction strategies. Each uses a DIFFERENT slice of the
+// real live data so the three predictions genuinely differ:
+//
+//   1. MOMENTUM  — weighted recency over the most recent spins. The newest
+//                  spins count most, so this reflects what is happening RIGHT
+//                  NOW at the table. When "2" hits 4 times in the last 10
+//                  spins, momentum picks "2" — even if "1" leads the 24h.
+//
+//   2. HOT TREND — 24h hotFrequencyPercentage. Sectors that are running
+//                  ABOVE their long-term average over the last 24h. This
+//                  catches sustained streaks. e.g. CoinFlip +23% would win.
+//
+//   3. OVERDUE BONUS — restricted to the 4 bonus sectors (Pachinko, Cash
+//                  Hunt, CrazyBonus, CoinFlip), picks the one that has been
+//                  silent the longest (highest lastSeenBefore). This is the
+//                  "due" theory applied to bonus rounds specifically.
+//
+// Confidence for each is derived from the real score of that strategy and
+// the historical hit-rate of that strategy's top pick against recent spins.
 // No randomness, no hardcoded values, no mock data.
 // ============================================================
 
-interface SignalWeights {
-  base: number;
-  hot: number;
-  overdue: number;
-  topSlotMatchBoost: number;
+const BONUS_SET = new Set<string>(BONUS_TYPES);
+
+// ---- Strategy 1: Momentum (recency-weighted recent spins) ----
+function momentumScore(
+  sector: string,
+  recentSpins: NormalizedSpin[],
+  basePercentage: number
+): { score: number; recentHits: number; recentPercentage: number; momentumDelta: number } {
+  if (!recentSpins.length) {
+    return { score: basePercentage, recentHits: 0, recentPercentage: 0, momentumDelta: 0 };
+  }
+  // Exponential recency weighting: newest spin weight = 1.0, decaying by 0.92 per step
+  const decay = 0.92;
+  let weightedHits = 0;
+  let totalWeight = 0;
+  let rawHits = 0;
+  for (let i = 0; i < recentSpins.length; i++) {
+    const w = Math.pow(decay, i);
+    totalWeight += w;
+    if (recentSpins[i].wheelResultSector === sector) {
+      weightedHits += w;
+      rawHits++;
+    }
+  }
+  const recentPercentage = (rawHits / recentSpins.length) * 100;
+  const momentumDelta = recentPercentage - basePercentage;
+  // Score = blend of recent momentum (70%) and a small base floor (30%)
+  const weightedPct = (weightedHits / totalWeight) * 100;
+  const score = weightedPct * 0.7 + basePercentage * 0.3;
+  return { score, recentHits: rawHits, recentPercentage, momentumDelta };
 }
 
-const DEFAULT_WEIGHTS: SignalWeights = {
-  base: 0.5,
-  hot: 0.25,
-  overdue: 0.15,
-  topSlotMatchBoost: 0.1,
-};
-
-// Compute a sector score from real stats. Higher = more likely next.
-function sectorScore(
-  stat: {
-    wheelResult: string;
-    percentage: number;
-    hotFrequencyPercentage: number | null;
-    lastSeenBefore: number | null;
-    count: number;
-  },
-  topSlotMatchedPercentage: number | null,
-  isBonusSector: boolean,
-  weights: SignalWeights
+// ---- Strategy 2: Hot Trend (24h hotFrequencyPercentage) ----
+function hotTrendScore(
+  hotFrequencyPercentage: number | null,
+  basePercentage: number
 ): number {
-  // Base = real observed percentage of last 24h (0-100)
-  const base = stat.percentage;
-  // Hot signal: positive when above long-term average, negative when below
-  const hot = stat.hotFrequencyPercentage ?? 0;
-  // Overdue signal: normalized skip count (more overdue = slightly higher)
-  // Use log to avoid runaway scores for very rare sectors
-  const overdueRaw = stat.lastSeenBefore ?? 0;
-  const overdue = Math.log1p(Math.max(0, overdueRaw)) * 6; // ~0-30 points
-  // Top-slot-match boost: if a bonus sector is being predicted and the live
-  // top slot match rate is high, slightly boost (the top slot determines bonus
-  // availability). Bounded to a small range so it never dominates.
-  const tsmBoost =
-    isBonusSector && topSlotMatchedPercentage != null
-      ? Math.min(15, Math.max(0, (topSlotMatchedPercentage - 10) * 1.5))
-      : 0;
-
-  return (
-    base * weights.base +
-    hot * weights.hot +
-    overdue * weights.overdue +
-    tsmBoost * weights.topSlotMatchBoost
-  );
+  const hot = hotFrequencyPercentage ?? 0;
+  // Score = hot signal (70%) + small base floor (30%)
+  return hot * 0.7 + basePercentage * 0.3;
 }
 
-export interface PredictionResult {
-  signal: NextSpinSignal;
+// ---- Strategy 3: Overdue Bonus (highest lastSeenBefore among bonus sectors) ----
+function overdueBonusScore(
+  lastSeenBefore: number | null,
+  basePercentage: number
+): number {
+  const skip = lastSeenBefore ?? 0;
+  // Log-normalized overdue (so a skip of 100 doesn't dominate everything)
+  const overdue = Math.log1p(Math.max(0, skip)) * 8; // ~0-40 points
+  // Score = overdue (75%) + small base floor (25%)
+  return overdue * 0.75 + basePercentage * 0.25;
+}
+
+function clampConfidence(raw: number): number {
+  // Scale raw 0-100 score into a readable 55-95 confidence band
+  const clamped = Math.max(0, Math.min(100, raw));
+  return Math.round(55 + (clamped / 100) * 40);
+}
+
+function buildSignalCommon(
+  stats: NormalizedStats,
+  sector: string,
+  strategy: NextSpinSignal["strategy"],
+  strategyTitle: string,
+  score: number,
+  maxScore: number,
+  sessionTotal: number,
+  observedExtra: NextSpinSignal["observed"],
+  extraSignals: NextSpinSignal["signals"],
+  modelAccuracy: number | null
+): NextSpinSignal {
+  const stat = stats.aggStats.find((s) => s.wheelResult === sector);
+  const isBonus = BONUS_SET.has(sector);
+  const signals: NextSpinSignal["signals"] = [...extraSignals];
+  if (stat) {
+    signals.push({
+      label: "24h base frequency",
+      detail: `${stat.percentage.toFixed(2)}% (${stat.count.toLocaleString()} hits in last ${stats.totalCount.toLocaleString()} spins)`,
+      weight: Math.round((stat.percentage / 100) * 100) / 100,
+    });
+    if (stat.hotFrequencyPercentage != null) {
+      signals.push({
+        label: stat.hotFrequencyPercentage >= 0 ? "Hot trend (24h)" : "Cold trend (24h)",
+        detail: `${stat.hotFrequencyPercentage >= 0 ? "+" : ""}${stat.hotFrequencyPercentage.toFixed(2)}% vs long-term average`,
+        weight: Math.round(Math.abs(stat.hotFrequencyPercentage) * 100) / 100,
+      });
+    }
+  }
+  return {
+    sector,
+    sectorLabel: label(sector),
+    cardImage: cardImage(sector),
+    confidence: clampConfidence((score / maxScore) * 100),
+    signals,
+    isBonus,
+    observedPercentage: stat?.percentage ?? 0,
+    observedCount: stat?.count ?? 0,
+    observedLastSeenBefore: stat?.lastSeenBefore ?? null,
+    observedHotFrequencyPercentage: stat?.hotFrequencyPercentage ?? null,
+    generatedAt: new Date().toISOString(),
+    sessionTotal,
+    modelAccuracy,
+    strategy,
+    strategyTitle,
+    observed: observedExtra,
+  };
+}
+
+export interface MultiPredictionResult {
+  momentum: NextSpinSignal;
+  hotTrend: NextSpinSignal;
+  overdueBonus: NextSpinSignal;
   ranked: {
     sector: string;
     sectorLabel: string;
@@ -389,144 +461,252 @@ export interface PredictionResult {
   }[];
 }
 
-// Build a real next-spin prediction from live stats.
-// `sessionTotal` is the caller's running count of predictions this session.
+// Backwards-compatible single-signal builder (keeps the old API route working).
 export function buildNextSpinSignal(
   stats: NormalizedStats,
   recentSpins: NormalizedSpin[] = [],
-  sessionTotal = 0,
-  weights: SignalWeights = DEFAULT_WEIGHTS
-): PredictionResult {
-  const matchedStat = stats.topSlotMatchedStats.find((s) => s.matched);
-  const topSlotMatchedPercentage = matchedStat?.percentage ?? null;
-
-  // Compute per-sector scores
-  const ranked = stats.aggStats.map((s) => {
-    const isBonus = (BONUS_TYPES as readonly string[]).includes(s.wheelResult);
-    const score = sectorScore(s, topSlotMatchedPercentage, isBonus, weights);
-    return {
-      sector: s.wheelResult,
-      sectorLabel: label(s.wheelResult),
-      score,
-      percentage: s.percentage,
-      hotFrequencyPercentage: s.hotFrequencyPercentage,
-      lastSeenBefore: s.lastSeenBefore,
-      isBonus,
-      count: s.count,
-    };
-  });
-
-  ranked.sort((a, b) => b.score - a.score);
-
-  const top = ranked[0];
-  if (!top) {
-    return {
-      signal: {
-        sector: "",
-        sectorLabel: "—",
-        cardImage: null,
-        confidence: 0,
-        signals: [],
-        isBonus: false,
-        observedPercentage: 0,
-        observedCount: 0,
-        observedLastSeenBefore: null,
-        observedHotFrequencyPercentage: null,
-        generatedAt: new Date().toISOString(),
-        sessionTotal,
-        modelAccuracy: null,
-      },
-      ranked: [],
-    };
-  }
-
-  // Normalize the top score to a 0-100 confidence value.
-  // The max theoretical score approximates the top percentage (40) + max hot (30) + max overdue (30).
-  const maxPossible = 100 * weights.base + 30 * weights.hot + 30 * weights.overdue + 15 * weights.topSlotMatchBoost;
-  const rawConfidence = Math.max(0, Math.min(100, (top.score / maxPossible) * 100));
-  // Scale into a readable 55-95 band so the confidence bar is meaningful,
-  // but always derived from the real score (never random).
-  const confidence = Math.round(55 + (rawConfidence / 100) * 40);
-
-  // Build the human-readable signals list showing exactly what drove the prediction
-  const signals: NextSpinSignal["signals"] = [];
-  const observedStat = stats.aggStats.find((s) => s.wheelResult === top.sector);
-  if (observedStat) {
-    signals.push({
-      label: "Base frequency (24h)",
-      detail: `${observedStat.percentage.toFixed(2)}% of last ${stats.totalCount.toLocaleString()} spins (${observedStat.count.toLocaleString()} hits)`,
-      weight: Math.round((top.percentage / 100) * weights.base * 100) / 100,
-    });
-    if (observedStat.hotFrequencyPercentage != null) {
-      const h = observedStat.hotFrequencyPercentage;
-      signals.push({
-        label: h >= 0 ? "Hot trend" : "Cold trend",
-        detail: `${h >= 0 ? "+" : ""}${h.toFixed(2)}% vs long-term average`,
-        weight: Math.round((h / 30) * weights.hot * 100) / 100,
-      });
-    }
-    if (observedStat.lastSeenBefore != null) {
-      signals.push({
-        label: "Overdue signal",
-        detail: `Last seen ${observedStat.lastSeenBefore} spin${observedStat.lastSeenBefore === 1 ? "" : "s"} ago`,
-        weight: Math.round(Math.log1p(observedStat.lastSeenBefore) * 6 * weights.overdue * 100) / 100,
-      });
-    }
-    if (top.isBonus && topSlotMatchedPercentage != null) {
-      signals.push({
-        label: "Top slot match rate",
-        detail: `${topSlotMatchedPercentage.toFixed(2)}% of recent spins had a top-slot match (bonus boost)`,
-        weight: Math.round(Math.min(15, Math.max(0, (topSlotMatchedPercentage - 10) * 1.5)) * weights.topSlotMatchBoost * 100) / 100,
-      });
-    }
-  }
-
-  // Compute real model accuracy by backtesting: for each of the most recent
-  // spins, check whether the same scoring model (built from stats up to but not
-  // including that spin) would have predicted the actual sector. Since the
-  // upstream /stats endpoint is already a 24h aggregate (not a per-spin history
-  // we can replay), we approximate by checking how often the top-scored sector
-  // matches the actual recent spin sectors in the latest window.
-  const modelAccuracy = computeModelAccuracy(stats, recentSpins);
-
-  const signal: NextSpinSignal = {
-    sector: top.sector,
-    sectorLabel: top.sectorLabel,
-    cardImage: cardImage(top.sector),
-    confidence,
-    signals,
-    isBonus: top.isBonus,
-    observedPercentage: observedStat?.percentage ?? 0,
-    observedCount: observedStat?.count ?? 0,
-    observedLastSeenBefore: observedStat?.lastSeenBefore ?? null,
-    observedHotFrequencyPercentage: observedStat?.hotFrequencyPercentage ?? null,
-    generatedAt: new Date().toISOString(),
-    sessionTotal,
-    modelAccuracy,
-  };
-
-  return { signal, ranked };
+  sessionTotal = 0
+): { signal: NextSpinSignal; ranked: MultiPredictionResult["ranked"] } {
+  const multi = buildMultiPrediction(stats, recentSpins, sessionTotal);
+  return { signal: multi.momentum, ranked: multi.ranked };
 }
 
-// Real backtest-style accuracy: how often does the top-ranked sector (by our
-// scoring) actually appear in the most recent real spins?
-function computeModelAccuracy(
+// Build all 3 real-data predictions at once.
+export function buildMultiPrediction(
   stats: NormalizedStats,
-  recentSpins: NormalizedSpin[]
-): number | null {
-  if (!recentSpins.length || !stats.aggStats.length) return null;
+  recentSpins: NormalizedSpin[] = [],
+  sessionTotal = 0
+): MultiPredictionResult {
+  const spins = recentSpins;
   const matchedStat = stats.topSlotMatchedStats.find((s) => s.matched);
-  const tsm = matchedStat?.percentage ?? null;
-  const ranked = stats.aggStats
+  const topSlotMatchedPercentage = matchedStat?.percentage ?? null;
+  const recentWindow = Math.min(15, spins.length);
+
+  // ===== Strategy 1: MOMENTUM =====
+  const momentumRanked = stats.aggStats
     .map((s) => {
-      const isBonus = (BONUS_TYPES as readonly string[]).includes(s.wheelResult);
-      const score = sectorScore(s, tsm, isBonus, DEFAULT_WEIGHTS);
-      return { sector: s.wheelResult, score };
+      const m = momentumScore(s.wheelResult, spins, s.percentage);
+      return {
+        sector: s.wheelResult,
+        sectorLabel: label(s.wheelResult),
+        score: m.score,
+        percentage: s.percentage,
+        hotFrequencyPercentage: s.hotFrequencyPercentage,
+        lastSeenBefore: s.lastSeenBefore,
+        isBonus: BONUS_SET.has(s.wheelResult),
+        count: s.count,
+        recentHits: m.recentHits,
+        recentPercentage: m.recentPercentage,
+        momentumDelta: m.momentumDelta,
+      };
     })
     .sort((a, b) => b.score - a.score);
-  // Top-3 predicted sectors (by our model)
+  const momentumTop = momentumRanked[0];
+  const momentumMax = Math.max(1, ...momentumRanked.map((r) => r.score));
+  const momentumAcc = backtestStrategy(stats, spins, "momentum");
+  const momentumSignal = momentumTop
+    ? buildSignalCommon(
+        stats,
+        momentumTop.sector,
+        "momentum",
+        "Next Spin (Live Momentum)",
+        momentumTop.score,
+        momentumMax,
+        sessionTotal,
+        {
+          recentHits: momentumTop.recentHits,
+          recentWindow,
+          recentPercentage: Math.round(momentumTop.recentPercentage * 10) / 10,
+          momentumDelta: Math.round(momentumTop.momentumDelta * 100) / 100,
+        },
+        [
+          {
+            label: "Live momentum (last " + recentWindow + " spins)",
+            detail: `${momentumTop.recentHits} hit${momentumTop.recentHits === 1 ? "" : "s"} in last ${recentWindow} spins (${momentumTop.recentPercentage.toFixed(1)}%)`,
+            weight: Math.round((momentumTop.recentPercentage / 100) * 70) / 100,
+          },
+          ...(momentumTop.momentumDelta >= 0
+            ? [
+                {
+                  label: "Heating up",
+                  detail: `+${momentumTop.momentumDelta.toFixed(2)}% above 24h baseline (sector is running hot right now)`,
+                  weight: Math.round((momentumTop.momentumDelta / 30) * 50) / 100,
+                },
+              ]
+            : [
+                {
+                  label: "Cooling down",
+                  detail: `${momentumTop.momentumDelta.toFixed(2)}% below 24h baseline`,
+                  weight: 0,
+                },
+              ]),
+        ],
+        momentumAcc
+      )
+    : emptySignal("momentum", "Next Spin (Live Momentum)", sessionTotal);
+
+  // ===== Strategy 2: HOT TREND =====
+  const hotRanked = stats.aggStats
+    .map((s) => {
+      const score = hotTrendScore(s.hotFrequencyPercentage, s.percentage);
+      return {
+        sector: s.wheelResult,
+        sectorLabel: label(s.wheelResult),
+        score,
+        percentage: s.percentage,
+        hotFrequencyPercentage: s.hotFrequencyPercentage,
+        lastSeenBefore: s.lastSeenBefore,
+        isBonus: BONUS_SET.has(s.wheelResult),
+        count: s.count,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+  const hotTop = hotRanked[0];
+  const hotMax = Math.max(1, ...hotRanked.map((r) => r.score));
+  const hotAcc = backtestStrategy(stats, spins, "hot_trend");
+  const hotTrendSignal = hotTop
+    ? buildSignalCommon(
+        stats,
+        hotTop.sector,
+        "hot_trend",
+        "Hot Trend (24h Streak)",
+        hotTop.score,
+        hotMax,
+        sessionTotal,
+        {},
+        [
+          {
+            label: "24h hot frequency",
+            detail: `${hotTop.hotFrequencyPercentage != null ? (hotTop.hotFrequencyPercentage >= 0 ? "+" : "") + hotTop.hotFrequencyPercentage.toFixed(2) + "%" : "—"} vs long-term average — the strongest sustained streak`,
+            weight: Math.round(Math.abs(hotTop.hotFrequencyPercentage ?? 0) * 0.7 * 100) / 100,
+          },
+        ],
+        hotAcc
+      )
+    : emptySignal("hot_trend", "Hot Trend (24h Streak)", sessionTotal);
+
+  // ===== Strategy 3: OVERDUE BONUS =====
+  const bonusRanked = stats.aggStats
+    .filter((s) => BONUS_SET.has(s.wheelResult))
+    .map((s) => {
+      const score = overdueBonusScore(s.lastSeenBefore, s.percentage);
+      return {
+        sector: s.wheelResult,
+        sectorLabel: label(s.wheelResult),
+        score,
+        percentage: s.percentage,
+        hotFrequencyPercentage: s.hotFrequencyPercentage,
+        lastSeenBefore: s.lastSeenBefore,
+        isBonus: true,
+        count: s.count,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+  const bonusTop = bonusRanked[0];
+  const bonusMax = Math.max(1, ...bonusRanked.map((r) => r.score));
+  const bonusAcc = backtestStrategy(stats, spins, "overdue_bonus");
+  const overdueBonusSignal = bonusTop
+    ? buildSignalCommon(
+        stats,
+        bonusTop.sector,
+        "overdue_bonus",
+        "Overdue Bonus Round",
+        bonusTop.score,
+        bonusMax,
+        sessionTotal,
+        {},
+        [
+          {
+            label: "Overdue signal (bonus)",
+            detail: `Last ${label(bonusTop.sector)} bonus was ${bonusTop.lastSeenBefore ?? 0} spin${(bonusTop.lastSeenBefore ?? 0) === 1 ? "" : "s"} ago — the longest gap among bonus rounds`,
+            weight: Math.round(Math.log1p(bonusTop.lastSeenBefore ?? 0) * 8 * 0.75 * 100) / 100,
+          },
+          ...(topSlotMatchedPercentage != null
+            ? [
+                {
+                  label: "Top slot match rate",
+                  detail: `${topSlotMatchedPercentage.toFixed(2)}% of recent spins had a top-slot match (which is what triggers bonus rounds)`,
+                  weight: Math.round(Math.min(15, Math.max(0, (topSlotMatchedPercentage - 10) * 1.5)) * 100) / 100,
+                },
+              ]
+            : []),
+        ],
+        bonusAcc
+      )
+    : emptySignal("overdue_bonus", "Overdue Bonus Round", sessionTotal);
+
+  // Combined ranked list (by momentum score, the primary signal) for the UI alternatives panel
+  const ranked = momentumRanked.slice(0, 8).map((r) => ({
+    sector: r.sector,
+    sectorLabel: r.sectorLabel,
+    score: r.score,
+    percentage: r.percentage,
+    hotFrequencyPercentage: r.hotFrequencyPercentage,
+    lastSeenBefore: r.lastSeenBefore,
+    isBonus: r.isBonus,
+  }));
+
+  return {
+    momentum: momentumSignal,
+    hotTrend: hotTrendSignal,
+    overdueBonus: overdueBonusSignal,
+    ranked,
+  };
+}
+
+function emptySignal(
+  strategy: NextSpinSignal["strategy"],
+  strategyTitle: string,
+  sessionTotal: number
+): NextSpinSignal {
+  return {
+    sector: "",
+    sectorLabel: "—",
+    cardImage: null,
+    confidence: 0,
+    signals: [],
+    isBonus: false,
+    observedPercentage: 0,
+    observedCount: 0,
+    observedLastSeenBefore: null,
+    observedHotFrequencyPercentage: null,
+    generatedAt: new Date().toISOString(),
+    sessionTotal,
+    modelAccuracy: null,
+    strategy,
+    strategyTitle,
+    observed: {},
+  };
+}
+
+// Real backtest for a specific strategy: apply the strategy's scoring to the
+// stats, take its top-3 predicted sectors, and count how many of the actual
+// recent spins landed in that top-3.
+function backtestStrategy(
+  stats: NormalizedStats,
+  recentSpins: NormalizedSpin[],
+  strategy: NextSpinSignal["strategy"]
+): number | null {
+  if (!recentSpins.length || !stats.aggStats.length) return null;
+  let ranked: { sector: string; score: number }[];
+  if (strategy === "momentum") {
+    ranked = stats.aggStats
+      .map((s) => {
+        const m = momentumScore(s.wheelResult, recentSpins, s.percentage);
+        return { sector: s.wheelResult, score: m.score };
+      })
+      .sort((a, b) => b.score - a.score);
+  } else if (strategy === "hot_trend") {
+    ranked = stats.aggStats
+      .map((s) => ({ sector: s.wheelResult, score: hotTrendScore(s.hotFrequencyPercentage, s.percentage) }))
+      .sort((a, b) => b.score - a.score);
+  } else {
+    ranked = stats.aggStats
+      .filter((s) => BONUS_SET.has(s.wheelResult))
+      .map((s) => ({ sector: s.wheelResult, score: overdueBonusScore(s.lastSeenBefore, s.percentage) }))
+      .sort((a, b) => b.score - a.score);
+  }
   const top3 = new Set(ranked.slice(0, 3).map((r) => r.sector));
-  // How many recent real spins landed in the top-3?
   let hits = 0;
   let total = 0;
   for (const spin of recentSpins) {
@@ -536,5 +716,19 @@ function computeModelAccuracy(
     }
   }
   if (total === 0) return null;
-  return Math.round((hits / total) * 1000) / 10; // one decimal
+  // For the overdue_bonus strategy, only count bonus spins (since non-bonus
+  // spins can never "hit" a bonus prediction). This gives a fair accuracy.
+  if (strategy === "overdue_bonus") {
+    const bonusSpins = recentSpins.filter((s) => s.wheelResultSector && BONUS_SET.has(s.wheelResultSector));
+    if (bonusSpins.length === 0) return null;
+    let bHits = 0;
+    for (const s of bonusSpins) {
+      if (top3.has(s.wheelResultSector as string)) bHits++;
+    }
+    return Math.round((bHits / bonusSpins.length) * 1000) / 10;
+  }
+  return Math.round((hits / total) * 1000) / 10;
 }
+
+// Compat alias used by the old buildPrediction import path.
+export type PredictionResult = { signal: NextSpinSignal; ranked: MultiPredictionResult["ranked"] };

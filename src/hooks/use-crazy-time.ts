@@ -19,7 +19,11 @@ export interface StatsResponse {
 }
 
 export interface PredictResponse {
-  signal: NextSpinSignal | null;
+  signals: {
+    momentum: NextSpinSignal;
+    hotTrend: NextSpinSignal;
+    overdueBonus: NextSpinSignal;
+  } | null;
   ranked: {
     sector: string;
     sectorLabel: string;
@@ -222,7 +226,7 @@ export function useCrazyTimePredict() {
   }, []);
 
   return {
-    signal: data?.signal ?? null,
+    signals: data?.signals ?? null,
     ranked: data?.ranked ?? [],
     recentSpinsCount: data?.recentSpinsCount ?? 0,
     totalSpins: data?.totalSpins ?? 0,
