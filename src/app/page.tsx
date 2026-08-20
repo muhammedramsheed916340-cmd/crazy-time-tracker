@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { LiveVideoPlayer } from "@/components/crazytime/LiveVideoPlayer";
 import { SpinHistory } from "@/components/crazytime/SpinHistory";
 import { CrazyTimeStatistics } from "@/components/crazytime/CrazyTimeStatistics";
@@ -11,8 +11,9 @@ import { Prediction } from "@/components/crazytime/Prediction";
 import { LiveStatusBar } from "@/components/crazytime/LiveStatusBar";
 import { SignalCard } from "@/components/crazytime/SignalCard";
 import { AccuracyTracker } from "@/components/crazytime/AccuracyTracker";
+import { BonusCenter } from "@/components/crazytime/BonusCenter";
 import { useCrazyTimeEvents, useCrazyTimeStats, useCrazyTimePredict } from "@/hooks/use-crazy-time";
-import { RefreshCw, Radio, Sparkles } from "lucide-react";
+import { RefreshCw, Radio, Sparkles, Gift } from "lucide-react";
 
 export default function Home() {
   // Live spin history - refresh every 15s
@@ -21,6 +22,8 @@ export default function Home() {
   const stats = useCrazyTimeStats(24, 30000);
   // Live prediction (on-demand, used for the accuracy tracker too)
   const predict = useCrazyTimePredict();
+  // Bonus Center popup state
+  const [bonusOpen, setBonusOpen] = useState(false);
 
   const latestSettledAt = useMemo(() => {
     return events.spins[0]?.settledAt ?? null;
@@ -44,17 +47,27 @@ export default function Home() {
               </p>
             </div>
           </div>
-          <button
-            onClick={() => {
-              events.refresh();
-              stats.refresh();
-            }}
-            className="flex items-center gap-1 text-[11px] sm:text-xs bg-[rgba(68,138,255,0.1)] hover:bg-[rgba(68,138,255,0.2)] border border-[rgba(68,138,255,0.2)] text-[#448AFF] transition px-2.5 py-1.5 rounded-md flex-shrink-0"
-            aria-label="Refresh all"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${events.loading || stats.loading ? "animate-spin" : ""}`} />
-            <span className="hidden sm:inline">Refresh</span>
-          </button>
+          <div className="flex items-center gap-2 flex-shrink-0">
+            <button
+              onClick={() => setBonusOpen(true)}
+              className="flex items-center gap-1 text-[11px] sm:text-xs bg-[rgba(255,215,0,0.1)] hover:bg-[rgba(255,215,0,0.2)] border border-[rgba(255,215,0,0.3)] text-[#FFD700] transition px-2.5 py-1.5 rounded-md"
+              aria-label="Bonus Intelligence Center"
+            >
+              <Gift className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Bonus Center</span>
+            </button>
+            <button
+              onClick={() => {
+                events.refresh();
+                stats.refresh();
+              }}
+              className="flex items-center gap-1 text-[11px] sm:text-xs bg-[rgba(68,138,255,0.1)] hover:bg-[rgba(68,138,255,0.2)] border border-[rgba(68,138,255,0.2)] text-[#448AFF] transition px-2.5 py-1.5 rounded-md"
+              aria-label="Refresh all"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${events.loading || stats.loading ? "animate-spin" : ""}`} />
+              <span className="hidden sm:inline">Refresh</span>
+            </button>
+          </div>
         </div>
       </header>
 
@@ -177,6 +190,9 @@ export default function Home() {
           />
         </div>
       </main>
+
+      {/* Bonus Intelligence Center Popup */}
+      <BonusCenter open={bonusOpen} onOpenChange={setBonusOpen} />
 
       {/* Footer */}
       <footer className="mt-auto bg-[#0d1020] border-t border-[#1e2240] text-[#8899cc]">

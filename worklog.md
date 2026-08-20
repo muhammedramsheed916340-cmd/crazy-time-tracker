@@ -424,3 +424,67 @@ This is NOT 100% accuracy (impossible on a random wheel), but it's a genuine imp
 Files changed:
 - src/lib/crazytime/adapter.ts (added AdaptiveWeights interface, computeAdaptiveWeights function, ensemble now uses adaptive weights, learning info added to signal output)
 - src/components/crazytime/SignalCard.tsx (added AI Adaptive Learning panel showing what the model learned)
+
+---
+Task ID: crazy-time-bonus-intelligence
+Agent: Z.ai Code (main)
+Task: Add a Bonus Intelligence & Alert System using ONLY real verified Crazy Time round data. Track Cash Hunt, Pachinko, Coin Flip, Crazy Time bonuses with frequency, last-seen, trend, distribution stats, and configurable alerts. Popup-style UI consistent with existing design.
+
+Implementation:
+1. New API route /api/crazytime/bonus:
+   - Fetches 200 real spins + 24h stats from the upstream casinoscores API
+   - Filters only bonus rounds (wheelResultSector ∈ {CashHunt, Pachinko, CoinFlip, CrazyBonus})
+   - Computes per-bonus statistics: 24h frequency, total count, hot frequency, rounds since last appeared, last hit time/multiplier, recent trend (last 30 vs 60 spins), avg/max multiplier
+   - Returns: bonusStats (4 bonus types), latestBonus, bonusHistory (last 20), distribution, mostFrequent, longestGap, totalBonuses, bonusRate
+
+2. New BonusCenter component (popup-style, mobile-first):
+   - Opens as a Dialog/popup from a "Bonus Center" button in the header
+   - Sections:
+     a. Live Alerts panel — real-time alerts triggered from verified data
+     b. Latest Bonus Result card — the most recent bonus with LIVE badge, multiplier, dealer
+     c. 4 Bonus Type cards — Cash Hunt, Pachinko, Coin Flip, Crazy Time with full stats (24h freq, last seen rounds ago, trend indicator, avg/max multiplier, LONG GAP badge)
+     d. Bonus Distribution bar chart — visual distribution of the 4 bonuses
+     e. Stats summary — total bonuses, bonus rate, most frequent
+     f. Longest Current Gap alert — which bonus has been silent longest
+     g. Bonus History list — last 20 bonus rounds with multiplier, time, dealer
+     h. Historical/Statistical disclaimer — clearly labels data as NOT predictions
+     i. Live data status — auto-refresh every 30s indicator
+
+3. Alert system (5 alert types, all from real verified data):
+   - new_bonus: "New Bonus Result Detected" — when a new bonus ID appears
+   - bonus_changed: "Bonus Type Changed" — when the bonus type differs from previous
+   - long_gap: "Long Gap" — when a bonus hasn't appeared in 40+ rounds
+   - frequency_shift: "Frequency Shift" — when 24h frequency changes by 5%+ between fetches
+   - new_data: "Bonus Intelligence Active" — on initial load
+   - Alerts are deduplicated (same type+key doesn't repeat on every refresh)
+   - Alerts can be toggled ON/OFF, cleared individually or all at once
+   - Every alert clearly states "Statistical observation — NOT a guarantee"
+
+4. UI consistency:
+   - Same dark navy theme (#0a0b14 bg, #141827 cards, #FFD700 gold accent for bonuses)
+   - Popup-style Dialog with scrollable content
+   - Mobile-first responsive grid (2 columns for bonus cards)
+   - "Bonus Center" button added to header (gold-themed, next to Refresh)
+
+5. Compliance with rules:
+   - ✅ Uses ONLY real verified Crazy Time round data (from upstream casinoscores API)
+   - ✅ Never fabricates bonus results
+   - ✅ Alerts clearly state "NOT a guarantee" in every message
+   - ✅ Statistical trends labeled separately from AI analysis
+   - ✅ Existing live-data functionality unchanged (prediction, video, results, dashboard all intact)
+   - ✅ Historical disclaimer: "frequencies, trends, and gaps are statistical observations of past data — they are NOT predictions"
+
+Verified in browser:
+- Bonus Center popup opens with real data: 34 bonuses tracked from 200 spins, 17.5% bonus rate
+- Latest bonus: Cash Hunt 100× multiplier, Dealer: Alise, LIVE badge
+- 4 bonus cards with full real stats (Cash Hunt 3.7%, Pachinko 3.0%, Coin Flip 8.9%, Crazy Time 1.4%)
+- LONG GAP badge on Crazy Time (139 rounds since last appeared) — real alert triggered
+- Alert deduplication working (1 alert instead of 20 duplicates)
+- Bonus history list with last 20 bonus rounds
+- Distribution bar chart showing all 4 bonuses
+- Zero console errors
+
+Files added/changed:
+- src/app/api/crazytime/bonus/route.ts (new — bonus intelligence API)
+- src/components/crazytime/BonusCenter.tsx (new — popup component with alerts)
+- src/app/page.tsx (added Bonus Center button + popup)
