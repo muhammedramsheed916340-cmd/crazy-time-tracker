@@ -9,8 +9,9 @@ import { CrazyBonusFlapper } from "@/components/crazytime/CrazyBonusFlapper";
 import { LatestTopMultipliers } from "@/components/crazytime/LatestTopMultipliers";
 import { Prediction } from "@/components/crazytime/Prediction";
 import { LiveStatusBar } from "@/components/crazytime/LiveStatusBar";
+import { SignalCard } from "@/components/crazytime/SignalCard";
 import { useCrazyTimeEvents, useCrazyTimeStats } from "@/hooks/use-crazy-time";
-import { RefreshCw, Radio } from "lucide-react";
+import { RefreshCw, Radio, Sparkles } from "lucide-react";
 
 export default function Home() {
   // Live spin history - refresh every 15s
@@ -23,20 +24,20 @@ export default function Home() {
   }, [events.spins]);
 
   return (
-    <div className="min-h-screen flex flex-col bg-zinc-100 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100">
-      {/* Header */}
-      <header className="sticky top-0 z-30 bg-gradient-to-r from-amber-600 via-rose-600 to-purple-700 text-white shadow-lg">
+    <div className="min-h-screen flex flex-col bg-[#0a0b14] text-white">
+      {/* Header - matching Revo Fixer reference */}
+      <header className="bg-[#141827] border-b border-[#1e2240] sticky top-0 z-30">
         <div className="max-w-7xl mx-auto px-3 sm:px-5 py-3 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-2 min-w-0">
-            <div className="w-9 h-9 rounded-full bg-white/20 backdrop-blur flex items-center justify-center flex-shrink-0">
-              <Radio className="w-5 h-5 animate-pulse" />
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-lg bg-[rgba(68,138,255,0.1)] border border-[rgba(68,138,255,0.2)] flex items-center justify-center flex-shrink-0">
+              <Radio className="w-4 h-4 text-[#448AFF] animate-pulse" />
             </div>
             <div className="min-w-0">
-              <h1 className="text-base sm:text-lg font-bold leading-tight truncate">
-                Crazy Time Live Tracker
+              <h1 className="text-base sm:text-lg font-extrabold leading-tight truncate">
+                <span className="text-[#448AFF]">CRAZY TIME</span> LIVE
               </h1>
-              <p className="text-[10px] sm:text-[11px] text-white/80 leading-tight truncate">
-                Real-time Evolution Gaming Crazy Time · Live spins, stats &amp; predictions
+              <p className="text-[10px] sm:text-[11px] text-[#8899cc] leading-tight truncate">
+                Real-time Evolution Gaming · Live spins, stats &amp; AI predictions
               </p>
             </div>
           </div>
@@ -45,7 +46,7 @@ export default function Home() {
               events.refresh();
               stats.refresh();
             }}
-            className="flex items-center gap-1 text-[11px] sm:text-xs bg-white/15 hover:bg-white/25 transition px-2.5 py-1.5 rounded-md backdrop-blur flex-shrink-0"
+            className="flex items-center gap-1 text-[11px] sm:text-xs bg-[rgba(68,138,255,0.1)] hover:bg-[rgba(68,138,255,0.2)] border border-[rgba(68,138,255,0.2)] text-[#448AFF] transition px-2.5 py-1.5 rounded-md flex-shrink-0"
             aria-label="Refresh all"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${events.loading || stats.loading ? "animate-spin" : ""}`} />
@@ -55,22 +56,38 @@ export default function Home() {
       </header>
 
       {/* Main content */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-5 py-4 sm:py-6 space-y-4 sm:space-y-6">
-        <LiveStatusBar
-          loading={events.loading || stats.loading}
-          error={events.error || stats.error}
-          lastUpdated={events.lastUpdated ?? stats.lastUpdated}
-          onRefresh={() => {
-            events.refresh();
-            stats.refresh();
-          }}
-          latestSettledAt={latestSettledAt}
-          spinsCount={events.spins.length}
-          totalCount={events.totalCount}
-        />
+      <main className="flex-1 w-full mx-auto px-3 sm:px-5 py-4 sm:py-6 space-y-4 sm:space-y-6">
+        {/* Hero / Live status */}
+        <div className="max-w-3xl mx-auto w-full">
+          <div className="text-center bg-[#141827] border border-[#1e2240] rounded-2xl px-4 py-3 mb-3">
+            <h1 className="text-base sm:text-xl font-extrabold">
+              <span className="text-[#448AFF]">CRAZY TIME</span> AI PREDICTOR
+            </h1>
+            <p className="text-[11px] text-[#8899cc] mt-1">
+              Live predictions from real Evolution Gaming Crazy Time data
+            </p>
+          </div>
+          <LiveStatusBar
+            loading={events.loading || stats.loading}
+            error={events.error || stats.error}
+            lastUpdated={events.lastUpdated ?? stats.lastUpdated}
+            onRefresh={() => {
+              events.refresh();
+              stats.refresh();
+            }}
+            latestSettledAt={latestSettledAt}
+            spinsCount={events.spins.length}
+            totalCount={events.totalCount}
+          />
+        </div>
+
+        {/* Hero Signal Card (Revo Fixer style) */}
+        <div className="max-w-3xl mx-auto w-full">
+          <SignalCard />
+        </div>
 
         {/* Video + Spin history row */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
+        <div className="max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-3 gap-4 sm:gap-6">
           <div className="lg:col-span-2">
             <LiveVideoPlayer />
           </div>
@@ -87,7 +104,7 @@ export default function Home() {
         </div>
 
         {/* Stats + Top slot + Flapper row */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
+        <div className="max-w-7xl mx-auto w-full grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 sm:gap-6">
           <CrazyTimeStatistics
             stats={stats.stats}
             loading={stats.loading}
@@ -109,7 +126,7 @@ export default function Home() {
         </div>
 
         {/* Multipliers + Prediction row */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
+        <div className="max-w-7xl mx-auto w-full grid grid-cols-1 lg:grid-cols-2 gap-4 sm:gap-6">
           <LatestTopMultipliers
             stats={stats.stats}
             loading={stats.loading}
@@ -126,7 +143,7 @@ export default function Home() {
         </div>
 
         {/* Coin flip + Cash hunt extra stats */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
+        <div className="max-w-7xl mx-auto w-full grid grid-cols-1 md:grid-cols-2 gap-4 sm:gap-6">
           <CoinFlipStats
             stats={stats.stats}
             loading={stats.loading}
@@ -143,17 +160,23 @@ export default function Home() {
       </main>
 
       {/* Footer */}
-      <footer className="mt-auto bg-zinc-900 dark:bg-black text-zinc-300 dark:text-zinc-400 border-t border-zinc-800">
+      <footer className="mt-auto bg-[#0d1020] border-t border-[#1e2240] text-[#8899cc]">
         <div className="max-w-7xl mx-auto px-3 sm:px-5 py-4 text-center text-[11px] sm:text-xs space-y-1">
-          <p>
+          <p className="flex items-center justify-center gap-1">
+            <Sparkles className="w-3 h-3 text-[#448AFF]" />
             Real-time data source:{" "}
-            <span className="font-mono text-zinc-200">
+            <span className="font-mono text-[#bcc6e0]">
               api-cs.casino.org/svc-evolution-game-events/api/crazytime
             </span>
           </p>
-          <p className="text-zinc-500">
-            Live video: Evolution Gaming Crazy Time feed (HLS). Auto-reconnects when the stream
-            temporarily fails. 100% real live data — no mock, demo or hardcoded values.
+          <p className="text-[#5a6a99]">
+            Live video: Evolution Gaming Crazy Time feed (HLS via proxy). Auto-reconnects when the
+            stream temporarily fails. 100% real live data — no mock, demo or hardcoded values.
+          </p>
+          <p className="text-[10px] text-[#5a6a99] pt-1">
+            Predictions are derived purely from live statistics (frequency, hot/cold trend, overdue
+            signal, top-slot match rate, flapper &amp; cash hunt averages). Backtested model accuracy
+            shown is the real hit rate of the top-3 predicted sectors against recent actual spins.
           </p>
         </div>
       </footer>
@@ -182,10 +205,10 @@ function CoinFlipStats({
 }) {
   const rows = stats?.coinFlipStats ?? [];
   return (
-    <Card className="bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 h-full flex flex-col">
+    <Card className="bg-[#141827] border-[#1e2240] text-white h-full flex flex-col">
       <CardHeader className="pb-2">
-        <CardTitle className="text-base font-bold flex items-center gap-2">
-          <Coins className="w-4 h-4 text-amber-500" />
+        <CardTitle className="text-base font-bold flex items-center gap-2 text-white">
+          <Coins className="w-4 h-4 text-[#FFD700]" />
           Coin Flip Stats
         </CardTitle>
       </CardHeader>
@@ -194,8 +217,8 @@ function CoinFlipStats({
           <SectionError message={error} />
         ) : loading && !stats ? (
           <div className="space-y-2">
-            <Skeleton className="h-16 w-full" />
-            <Skeleton className="h-16 w-full" />
+            <Skeleton className="h-16 w-full bg-[#1e2240]" />
+            <Skeleton className="h-16 w-full bg-[#1e2240]" />
           </div>
         ) : rows.length === 0 ? (
           <EmptyState message="Waiting for Coin Flip bonus statistics…" />
@@ -206,7 +229,7 @@ function CoinFlipStats({
               return (
                 <div
                   key={r.symbol}
-                  className="flex items-center gap-3 rounded-md bg-zinc-50 dark:bg-zinc-800/50 px-2 py-2"
+                  className="flex items-center gap-3 rounded-md bg-[#0d1020] px-2 py-2"
                 >
                   <div
                     className="w-8 h-8 rounded-full flex-shrink-0"
@@ -215,11 +238,11 @@ function CoinFlipStats({
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center justify-between">
                       <span className="font-semibold text-sm">{r.symbol}</span>
-                      <span className="font-bold text-amber-600 text-sm">
+                      <span className="font-bold text-[#FFD700] text-sm">
                         {r.avgMultiplier.toFixed(2)}× avg
                       </span>
                     </div>
-                    <div className="flex items-center justify-between text-[10px] text-zinc-500">
+                    <div className="flex items-center justify-between text-[10px] text-[#8899cc]">
                       <span>{r.count.toLocaleString()} flips · {r.percentage.toFixed(1)}%</span>
                       <span>
                         LTA mult: {r.coinFlipMultiplierLongTermAverage != null ? r.coinFlipMultiplierLongTermAverage.toFixed(2) + "×" : "—"}
@@ -229,7 +252,7 @@ function CoinFlipStats({
                 </div>
               );
             })}
-            <div className="text-[10px] text-zinc-400 text-right">
+            <div className="text-[10px] text-[#5a6a99] text-right">
               Updated {relativeTime(lastUpdated)}
             </div>
           </div>
@@ -252,10 +275,10 @@ function CashHuntStats({
 }) {
   const rows = (stats?.cashHuntSymbolStats ?? []).slice().sort((a, b) => b.avgMultiplier - a.avgMultiplier);
   return (
-    <Card className="bg-white dark:bg-zinc-900 border-zinc-200 dark:border-zinc-800 h-full flex flex-col">
+    <Card className="bg-[#141827] border-[#1e2240] text-white h-full flex flex-col">
       <CardHeader className="pb-2">
-        <CardTitle className="text-base font-bold flex items-center gap-2">
-          <Search className="w-4 h-4 text-emerald-500" />
+        <CardTitle className="text-base font-bold flex items-center gap-2 text-white">
+          <Search className="w-4 h-4 text-[#2ed573]" />
           Cash Hunt Symbol Stats
         </CardTitle>
       </CardHeader>
@@ -265,7 +288,7 @@ function CashHuntStats({
         ) : loading && !stats ? (
           <div className="space-y-2">
             {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-10 w-full" />
+              <Skeleton key={i} className="h-10 w-full bg-[#1e2240]" />
             ))}
           </div>
         ) : rows.length === 0 ? (
@@ -275,19 +298,19 @@ function CashHuntStats({
             {rows.map((r, idx) => (
               <div
                 key={r.symbol}
-                className="flex items-center gap-2 rounded-md bg-zinc-50 dark:bg-zinc-800/50 px-2 py-1.5"
+                className="flex items-center gap-2 rounded-md bg-[#0d1020] px-2 py-1.5"
               >
-                <div className="w-7 h-7 rounded-md bg-emerald-500 text-white flex items-center justify-center text-xs font-bold flex-shrink-0">
+                <div className="w-7 h-7 rounded-md bg-[#2ed573] text-[#0a0b14] flex items-center justify-center text-xs font-bold flex-shrink-0">
                   {r.symbol}
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center justify-between">
                     <span className="text-xs font-semibold">Symbol {r.symbol}</span>
-                    <span className="text-xs font-bold text-amber-600">
+                    <span className="text-xs font-bold text-[#FFD700]">
                       {r.avgMultiplier.toFixed(2)}×
                     </span>
                   </div>
-                  <div className="flex items-center justify-between text-[10px] text-zinc-500">
+                  <div className="flex items-center justify-between text-[10px] text-[#8899cc]">
                     <span>{r.count.toLocaleString()} picks</span>
                     <span>
                       LTA: {r.cashHuntLongTermAverage != null ? r.cashHuntLongTermAverage.toFixed(2) + "×" : "—"}
@@ -296,12 +319,12 @@ function CashHuntStats({
                 </div>
                 <div className="w-12 text-right">
                   {idx === 0 && (
-                    <span className="text-[9px] text-emerald-600 font-bold">BEST</span>
+                    <span className="text-[9px] text-[#2ed573] font-bold">BEST</span>
                   )}
                 </div>
               </div>
             ))}
-            <div className="text-[10px] text-zinc-400 text-right">
+            <div className="text-[10px] text-[#5a6a99] text-right">
               Updated {relativeTime(lastUpdated)}
             </div>
           </div>

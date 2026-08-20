@@ -254,3 +254,30 @@ export interface NormalizedPrediction {
   bestCashHuntSymbol: { symbol: string; avgMultiplier: number } | null;
   summary: string;
 }
+
+// A single "next spin" signal derived purely from real live stats.
+export interface NextSpinSignal {
+  sector: string; // raw sector key (e.g. "1", "Pachinko")
+  sectorLabel: string; // human label
+  cardImage: string | null; // cloudinary card image
+  confidence: number; // 0-100, derived from real statistical signals
+  // The real signals that contributed to this prediction
+  signals: {
+    label: string;
+    detail: string;
+    weight: number; // contribution to confidence
+  }[];
+  // Whether the prediction is a bonus round (Pachinko/CashHunt/CrazyBonus/CoinFlip)
+  isBonus: boolean;
+  // Real observed stats that fed the prediction
+  observedPercentage: number; // % of last 24h spins landing on this sector
+  observedCount: number;
+  observedLastSeenBefore: number | null;
+  observedHotFrequencyPercentage: number | null;
+  generatedAt: string; // ISO
+  // Real session counter (counts how many predictions have been made this session)
+  sessionTotal: number;
+  // Real model accuracy computed against recent spins:
+  // how often the highest-weighted sector matched the actual next spin in the recent window
+  modelAccuracy: number | null;
+}

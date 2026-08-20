@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { NormalizedSpin, NormalizedStats, NormalizedPrediction } from "@/lib/crazytime/types";
+import type { NormalizedSpin, NormalizedStats, NormalizedPrediction, NextSpinSignal } from "@/lib/crazytime/types";
 
 export interface EventsResponse {
   spins: NormalizedSpin[];
@@ -16,6 +16,24 @@ export interface StatsResponse {
   prediction: NormalizedPrediction;
   error?: string;
   fetchedAt: string;
+}
+
+export interface PredictResponse {
+  signal: NextSpinSignal | null;
+  ranked: {
+    sector: string;
+    sectorLabel: string;
+    score: number;
+    percentage: number;
+    hotFrequencyPercentage: number | null;
+    lastSeenBefore: number | null;
+    isBonus: boolean;
+  }[];
+  predictionSummary?: NormalizedPrediction;
+  recentSpinsCount: number;
+  totalSpins: number;
+  fetchedAt: string;
+  error?: string;
 }
 
 export interface FetchState<T> {
@@ -170,5 +188,48 @@ export function useCrazyTimeSpin(id: string | null | undefined, intervalMs = 150
     error: state.data?.error || state.error,
     lastUpdated: state.lastUpdated,
     refresh: state.refresh,
+  };
+}
+
+// On-demand prediction hook. Does NOT auto-poll - the user clicks "Get Signal"
+// to fetch a fresh real-data prediction. The countdown timer in the UI calls refresh().
+export function useCrazyTimePredict() {
+  const [data, setData] = useState<PredictResponse | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<string | null>(null);
+
+  const fetchNow = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/crazytime/predict?size=30&_=${Date.now()}`, {
+        cache: "no-store",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = (await res.json()) as PredictResponse;
+      setData(json);
+      setLastUpdated(new Date().toISOString());
+      if (json.error) setError(json.error);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Network error";
+      setError(msg);
+      setLastUpdated(new Date().toISOString());
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  return {
+    signal: data?.signal ?? null,
+    ranked: data?.ranked ?? [],
+    recentSpinsCount: data?.recentSpinsCount ?? 0,
+    totalSpins: data?.totalSpins ?? 0,
+    predictionSummary: data?.predictionSummary ?? null,
+    loading,
+    error: error || data?.error || null,
+    lastUpdated,
+    fetchNow,
   };
 }
