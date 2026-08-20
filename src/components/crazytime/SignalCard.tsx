@@ -33,24 +33,24 @@ const STRATEGY_META: Record<
 > = {
   momentum: {
     title: "SIGNAL 1",
-    subtitle: "Hottest Now",
+    subtitle: "AI Markov (top)",
     icon: Zap,
     accent: "#448AFF",
-    short: "MOMENTUM",
+    short: "MARKOV-1",
   },
   hotTrend: {
     title: "SIGNAL 2",
-    subtitle: "Rising Fast",
+    subtitle: "AI Markov (alt)",
     icon: Flame,
     accent: "#ff6b35",
-    short: "BIGGEST RISER",
+    short: "MARKOV-ALT",
   },
   overdueBonus: {
     title: "SIGNAL 3",
-    subtitle: "Best Coverage",
+    subtitle: "AI Deep Pattern",
     icon: Hourglass,
     accent: "#FFD700",
-    short: "COVERAGE",
+    short: "DEEP-2",
   },
 };
 

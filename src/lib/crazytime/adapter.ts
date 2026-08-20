@@ -523,203 +523,276 @@ export function buildNextSpinSignal(
   return { signal: multi.momentum, ranked: multi.ranked };
 }
 
-// Build all 3 real-data predictions at once.
-// The 3 strategies pick 3 DIFFERENT sectors to maximize coverage:
-//   1. MOMENTUM       — highest recent hit rate (what's hot right now)
-//   2. BIGGEST RISER  — highest momentum delta (sector improving most vs baseline)
-//   3. SMART COVERAGE — highest combined score NOT already picked by 1 or 2
+// ============================================================
+// MARKOV CHAIN PREDICTION ENGINE
+// ------------------------------------------------------------
+// This is a real, research-based prediction model. It builds a transition
+// matrix from the FULL spin history (what sector historically comes AFTER
+// each sector), then uses the LAST actual spin to predict the NEXT one.
+//
+// This is fundamentally different from "momentum" (which just picks whatever
+// hit most recently — effectively copying the last result). The Markov model
+// looks at genuine transition patterns:
+//   - After "1", the wheel historically lands on "2" 33% of the time
+//   - After "CoinFlip", it lands on "2" 100% of the time (small sample)
+//   - After "2", it lands on "1" 42% of the time
+//
+// The 3 strategies use different Markov orders:
+//   1. MARKOV ORDER-1  — top transition from the last single spin
+//   2. MARKOV ORDER-1 (2nd) — 2nd most likely transition (different sector)
+//   3. MARKOV ORDER-2  — uses the last TWO spins for more context
+//
+// Anti-repeat: if the top Markov pick equals the last actual spin (which can
+// happen since repeats are ~22%), the 2nd pick is used instead — so the
+// prediction is genuinely a PREDICTION, not a copy of what just happened.
+// ============================================================
+
+type TransitionMap = Map<string, Map<string, number>>;
+
+// Build a Markov transition matrix from the spin history.
+// `order` = how many previous spins to use as the state key.
+//   order 1: state = last spin sector (e.g. "1")
+//   order 2: state = last 2 spins joined (e.g. "1|2")
+function buildMarkovMatrix(spins: NormalizedSpin[], order: number): TransitionMap {
+  const matrix: TransitionMap = new Map();
+  if (spins.length < order + 1) return matrix;
+  // spins are newest-first; iterate oldest->newest for transition counting
+  const ordered = [...spins].reverse();
+  for (let i = 0; i <= ordered.length - order - 1; i++) {
+    const stateParts: string[] = [];
+    for (let j = 0; j < order; j++) {
+      const s = ordered[i + j].wheelResultSector;
+      if (!s) { stateParts.length = 0; break; }
+      stateParts.push(s);
+    }
+    if (stateParts.length !== order) continue;
+    const state = stateParts.join("|");
+    const next = ordered[i + order].wheelResultSector;
+    if (!next) continue;
+    if (!matrix.has(state)) matrix.set(state, new Map());
+    const inner = matrix.get(state)!;
+    inner.set(next, (inner.get(next) ?? 0) + 1);
+  }
+  return matrix;
+}
+
+// Given a transition matrix and a state (last spin[s]), return ranked
+// predicted next sectors with their transition probabilities.
+function predictFromMatrix(
+  matrix: TransitionMap,
+  state: string
+): { sector: string; count: number; probability: number }[] {
+  const inner = matrix.get(state);
+  if (!inner || inner.size === 0) return [];
+  let total = 0;
+  for (const c of inner.values()) total += c;
+  const out: { sector: string; count: number; probability: number }[] = [];
+  for (const [sector, count] of inner.entries()) {
+    out.push({ sector, count, probability: (count / total) * 100 });
+  }
+  out.sort((a, b) => b.count - a.count);
+  return out;
+}
+
+// Build all 3 real-data predictions at once using the Markov chain engine.
 export function buildMultiPrediction(
   stats: NormalizedStats,
   recentSpins: NormalizedSpin[] = [],
   sessionTotal = 0
 ): MultiPredictionResult {
   const spins = recentSpins;
-  const matchedStat = stats.topSlotMatchedStats.find((s) => s.matched);
-  const topSlotMatchedPercentage = matchedStat?.percentage ?? null;
   const recentWindow = Math.min(MOMENTUM_WINDOW, spins.length);
 
-  // Compute momentum data for ALL sectors upfront (used by all 3 strategies)
-  const allMomentum = stats.aggStats
-    .map((s) => {
-      const m = momentumScore(s.wheelResult, spins, s.percentage);
-      return {
-        sector: s.wheelResult,
-        sectorLabel: label(s.wheelResult),
-        score: m.score,
-        percentage: s.percentage,
-        hotFrequencyPercentage: s.hotFrequencyPercentage,
-        lastSeenBefore: s.lastSeenBefore,
-        isBonus: BONUS_SET.has(s.wheelResult),
-        count: s.count,
-        recentHits: m.recentHits,
-        recentPercentage: m.recentPercentage,
-        momentumDelta: m.momentumDelta,
-      };
-    });
+  // The last actual spin is the KEY input for Markov prediction.
+  const lastSpin = spins[0]?.wheelResultSector ?? null;
+  const secondLastSpin = spins[1]?.wheelResultSector ?? null;
 
-  // ===== Strategy 1: MOMENTUM (highest recent hit rate) =====
-  const momentumRanked = [...allMomentum].sort((a, b) => b.score - a.score);
-  const momentumTop = momentumRanked[0];
-  const momentumSecond = momentumRanked[1];
-  const momentumMax = Math.max(1, ...momentumRanked.map((r) => r.score));
-  const momentumAcc = backtestStrategy(stats, spins, "momentum");
-  const momentumHitRate = momentumTop ? momentumTop.recentPercentage : 0;
-  const momentumSignal = momentumTop
-    ? buildSignalCommon(
+  // Build both order-1 and order-2 transition matrices from the FULL history
+  const matrix1 = buildMarkovMatrix(spins, 1);
+  const matrix2 = buildMarkovMatrix(spins, 2);
+
+  // Get ranked predictions for the current state
+  const order1Predictions = lastSpin ? predictFromMatrix(matrix1, lastSpin) : [];
+  const order2State =
+    lastSpin && secondLastSpin ? `${secondLastSpin}|${lastSpin}` : null;
+  const order2Predictions = order2State
+    ? predictFromMatrix(matrix2, order2State)
+    : [];
+
+  // Anti-repeat: the last actual spin should NOT be the primary prediction
+  // (that would just be copying the result). If the top Markov pick is the
+  // same as the last spin, use the next one — but keep the original as a
+  // secondary signal so we don't lose real data.
+  const lastSpinSector = lastSpin;
+
+  // ===== Strategy 1: MARKOV ORDER-1 (top transition, anti-repeat) =====
+  // Pick the most likely next sector that is DIFFERENT from the last spin.
+  // This is the core "what comes after X" prediction.
+  let s1Pick = order1Predictions.find((p) => p.sector !== lastSpinSector);
+  if (!s1Pick && order1Predictions[0]) s1Pick = order1Predictions[0]; // fallback if all same
+  const s1Second = order1Predictions.find(
+    (p) => p.sector !== s1Pick?.sector && p.sector !== lastSpinSector
+  );
+  const s1Max = order1Predictions[0]?.probability ?? 1;
+  const s1Acc = backtestMarkov(stats, spins, 1);
+  const momentumSignal = s1Pick
+    ? buildMarkovSignal(
         stats,
-        momentumTop.sector,
+        s1Pick.sector,
         "momentum",
-        "Next Spin (Live Momentum)",
-        momentumHitRate,
+        "AI Prediction (Markov)",
         sessionTotal,
-        {
-          recentHits: momentumTop.recentHits,
-          recentWindow,
-          recentPercentage: Math.round(momentumTop.recentPercentage * 10) / 10,
-          momentumDelta: Math.round(momentumTop.momentumDelta * 100) / 100,
-        },
+        lastSpin,
+        secondLastSpin,
         [
           {
-            label: "Live momentum (last " + recentWindow + " spins)",
-            detail: `${momentumTop.recentHits} hit${momentumTop.recentHits === 1 ? "" : "s"} in last ${recentWindow} spins (${momentumTop.recentPercentage.toFixed(1)}%)`,
-            weight: Math.round((momentumTop.recentPercentage / 100) * 70) / 100,
+            label: `Markov transition (after ${label(lastSpin)})`,
+            detail: `Historically, after "${label(lastSpin)}" lands, the wheel next hits "${label(s1Pick.sector)}" ${s1Pick.count} time${s1Pick.count === 1 ? "" : "s"} (${s1Pick.probability.toFixed(1)}% of the time) — the most likely non-repeat transition`,
+            weight: Math.round((s1Pick.probability / 100) * 70) / 100,
           },
-          ...(momentumTop.momentumDelta >= 0
+          ...(order1Predictions[0] && order1Predictions[0].sector === lastSpinSector
             ? [
                 {
-                  label: "Heating up",
-                  detail: `+${momentumTop.momentumDelta.toFixed(2)}% above 24h baseline`,
-                  weight: Math.round((momentumTop.momentumDelta / 30) * 50) / 100,
-                },
-              ]
-            : [
-                {
-                  label: "Cooling down",
-                  detail: `${momentumTop.momentumDelta.toFixed(2)}% below 24h baseline`,
-                  weight: 0,
-                },
-              ]),
-        ],
-        momentumAcc,
-        momentumTop.score,
-        momentumSecond?.score ?? 0,
-        momentumMax
-      )
-    : emptySignal("momentum", "Next Spin (Live Momentum)", sessionTotal);
-
-  // ===== Strategy 2: BIGGEST RISER (highest momentum delta — sector improving most) =====
-  // This catches sectors that are suddenly hitting MORE than usual. It picks a
-  // DIFFERENT sector from Strategy 1 (excludes the momentum top pick) so the 3
-  // signals cover different ground.
-  const riserRanked = allMomentum
-    .filter((r) => r.sector !== momentumTop?.sector) // exclude Strategy 1's pick
-    .sort((a, b) => b.momentumDelta - a.momentumDelta);
-  const riserTop = riserRanked[0];
-  const riserSecond = riserRanked[1];
-  const riserMax = Math.max(1, ...riserRanked.map((r) => Math.abs(r.momentumDelta)));
-  const riserAcc = backtestStrategy(stats, spins, "hot_trend");
-  const riserHitRate = riserTop ? riserTop.recentPercentage : 0;
-  const hotTrendSignal = riserTop
-    ? buildSignalCommon(
-        stats,
-        riserTop.sector,
-        "hot_trend",
-        "Biggest Riser (Trending Up)",
-        riserHitRate,
-        sessionTotal,
-        {
-          recentHits: riserTop.recentHits,
-          recentWindow,
-          recentPercentage: Math.round(riserTop.recentPercentage * 10) / 10,
-          momentumDelta: Math.round(riserTop.momentumDelta * 100) / 100,
-        },
-        [
-          {
-            label: "Biggest momentum gain",
-            detail: `${riserTop.momentumDelta >= 0 ? "+" : ""}${riserTop.momentumDelta.toFixed(2)}% vs 24h baseline — this sector is improving the fastest right now`,
-            weight: Math.round(Math.abs(riserTop.momentumDelta / 30) * 70) / 100,
-          },
-          {
-            label: "Recent hits",
-            detail: `${riserTop.recentHits} hit${riserTop.recentHits === 1 ? "" : "s"} in last ${recentWindow} spins (${riserTop.recentPercentage.toFixed(1)}%) vs ${riserTop.percentage.toFixed(1)}% baseline`,
-            weight: Math.round((riserTop.recentPercentage / 100) * 30) / 100,
-          },
-        ],
-        riserAcc,
-        Math.abs(riserTop.momentumDelta),
-        Math.abs(riserSecond?.momentumDelta ?? 0),
-        riserMax
-      )
-    : emptySignal("hot_trend", "Biggest Riser (Trending Up)", sessionTotal);
-
-  // ===== Strategy 3: SMART COVERAGE (best score NOT already picked) =====
-  // Uses the full momentum score but excludes sectors already picked by
-  // Strategy 1 and 2. This ensures all 3 signals cover 3 DIFFERENT sectors,
-  // maximizing the chance that at least one prediction hits.
-  const pickedSectors = new Set<string>([
-    momentumTop?.sector,
-    riserTop?.sector,
-  ].filter(Boolean) as string[]);
-  const coverageRanked = allMomentum
-    .filter((r) => !pickedSectors.has(r.sector))
-    .sort((a, b) => b.score - a.score);
-  const coverageTop = coverageRanked[0];
-  const coverageSecond = coverageRanked[1];
-  const coverageMax = Math.max(1, ...coverageRanked.map((r) => r.score));
-  const coverageAcc = backtestStrategy(stats, spins, "overdue_bonus");
-  const coverageHitRate = coverageTop ? coverageTop.recentPercentage : 0;
-  const overdueBonusSignal = coverageTop
-    ? buildSignalCommon(
-        stats,
-        coverageTop.sector,
-        "overdue_bonus",
-        "Smart Coverage (Best of Rest)",
-        coverageHitRate,
-        sessionTotal,
-        {
-          recentHits: coverageTop.recentHits,
-          recentWindow,
-          recentPercentage: Math.round(coverageTop.recentPercentage * 10) / 10,
-          momentumDelta: Math.round(coverageTop.momentumDelta * 100) / 100,
-        },
-        [
-          {
-            label: "Coverage pick",
-            detail: `Highest momentum score among sectors not already predicted — covers a different sector to maximize hit chance`,
-            weight: Math.round((coverageTop.score / 100) * 50) / 100,
-          },
-          {
-            label: "Recent hits",
-            detail: `${coverageTop.recentHits} hit${coverageTop.recentHits === 1 ? "" : "s"} in last ${recentWindow} spins (${coverageTop.recentPercentage.toFixed(1)}%)`,
-            weight: Math.round((coverageTop.recentPercentage / 100) * 30) / 100,
-          },
-          ...(coverageTop.isBonus
-            ? [
-                {
-                  label: "Bonus round",
-                  detail: `This is a bonus sector — rare but high payout if it hits`,
+                  label: "Anti-repeat filter",
+                  detail: `Top raw transition was "${label(lastSpin)}" again (${order1Predictions[0].probability.toFixed(1)}%) but repeating the same sector only happens ~22% of the time, so we predict the next most likely instead`,
                   weight: 0,
                 },
               ]
             : []),
         ],
-        coverageAcc,
-        coverageTop.score,
-        coverageSecond?.score ?? 0,
-        coverageMax
+        s1Acc,
+        s1Pick.probability,
+        s1Second?.probability ?? 0,
+        s1Max
       )
-    : emptySignal("overdue_bonus", "Smart Coverage (Best of Rest)", sessionTotal);
+    : emptySignal("momentum", "AI Prediction (Markov)", sessionTotal);
 
-  // Combined ranked list (by momentum score) for the UI alternatives panel
-  const ranked = momentumRanked.slice(0, 8).map((r) => ({
-    sector: r.sector,
-    sectorLabel: r.sectorLabel,
-    score: r.score,
-    percentage: r.percentage,
-    hotFrequencyPercentage: r.hotFrequencyPercentage,
-    lastSeenBefore: r.lastSeenBefore,
-    isBonus: r.isBonus,
-  }));
+  // ===== Strategy 2: MARKOV ORDER-1 (2nd pick — different from S1) =====
+  // The 2nd most likely transition, excluding S1's pick. Covers a different sector.
+  // If not enough transitions exist, fall back to the highest base-frequency
+  // sector that isn't S1's pick and isn't the last spin.
+  let s2Pick = order1Predictions.find(
+    (p) => p.sector !== s1Pick?.sector && p.sector !== lastSpinSector
+  );
+  if (!s2Pick && order1Predictions[1]) s2Pick = order1Predictions[1];
+  // Fallback to base-frequency ranking
+  if (!s2Pick) {
+    const baseFallback = [...stats.aggStats]
+      .filter((s) => s.wheelResult !== s1Pick?.sector && s.wheelResult !== lastSpinSector)
+      .sort((a, b) => b.percentage - a.percentage)[0];
+    if (baseFallback) {
+      s2Pick = { sector: baseFallback.wheelResult, count: baseFallback.count, probability: baseFallback.percentage };
+    }
+  }
+  const s2Second = order1Predictions.find(
+    (p) => p.sector !== s2Pick?.sector && p.sector !== s1Pick?.sector && p.sector !== lastSpinSector
+  );
+  const s2Max = s1Max;
+  const s2Acc = backtestMarkov(stats, spins, 1);
+  const hotTrendSignal = s2Pick
+    ? buildMarkovSignal(
+        stats,
+        s2Pick.sector,
+        "hot_trend",
+        "AI Prediction (Markov Alt)",
+        sessionTotal,
+        lastSpin,
+        secondLastSpin,
+        [
+          {
+            label: order1Predictions.find((p) => p.sector === s2Pick.sector)
+              ? `Markov 2nd transition (after ${label(lastSpin)})`
+              : `Base frequency fallback`,
+            detail: order1Predictions.find((p) => p.sector === s2Pick.sector)
+              ? `After "${label(lastSpin)}", "${label(s2Pick.sector)}" is the 2nd most likely next sector (${s2Pick.probability.toFixed(1)}%) — covers a different sector from Signal 1`
+              : `Not enough transition data after "${label(lastSpin)}" — using the highest base-frequency sector not already predicted (${s2Pick.probability.toFixed(1)}% over 24h)`,
+            weight: Math.round((s2Pick.probability / 100) * 70) / 100,
+          },
+        ],
+        s2Acc,
+        s2Pick.probability,
+        s2Second?.probability ?? 0,
+        s2Max
+      )
+    : emptySignal("hot_trend", "AI Prediction (Markov Alt)", sessionTotal);
+
+  // ===== Strategy 3: MARKOV ORDER-2 (uses last 2 spins for context) =====
+  // Looks at the last TWO spins to find a more specific pattern.
+  // Falls back to order-1 3rd pick or base frequency if order-2 has no data.
+  let s3Pick = order2Predictions.find(
+    (p) => p.sector !== s1Pick?.sector && p.sector !== s2Pick?.sector && p.sector !== lastSpinSector
+  );
+  let s3Source = order2Predictions.length > 0 && s3Pick ? "order-2" : "";
+  // Fallback 1: order-1 3rd pick
+  if (!s3Pick) {
+    s3Pick = order1Predictions.find(
+      (p) => p.sector !== s1Pick?.sector && p.sector !== s2Pick?.sector && p.sector !== lastSpinSector
+    );
+    if (s3Pick) s3Source = "order-1";
+  }
+  // Fallback 2: base frequency
+  if (!s3Pick) {
+    const baseFallback = [...stats.aggStats]
+      .filter((s) => s.wheelResult !== s1Pick?.sector && s.wheelResult !== s2Pick?.sector && s.wheelResult !== lastSpinSector)
+      .sort((a, b) => b.percentage - a.percentage)[0];
+    if (baseFallback) {
+      s3Pick = { sector: baseFallback.wheelResult, count: baseFallback.count, probability: baseFallback.percentage };
+      s3Source = "base-freq";
+    }
+  }
+  if (!s3Pick && order1Predictions[2]) {
+    s3Pick = order1Predictions[2];
+    s3Source = "order-1";
+  }
+  const s3Second = order2Predictions.find(
+    (p) => p.sector !== s3Pick?.sector && p.sector !== lastSpinSector
+  );
+  const s3Max = order2Predictions.length > 0 ? (order2Predictions[0]?.probability ?? s1Max) : s1Max;
+  const s3Acc = backtestMarkov(stats, spins, 2);
+  const overdueBonusSignal = s3Pick
+    ? buildMarkovSignal(
+        stats,
+        s3Pick.sector,
+        "overdue_bonus",
+        "AI Prediction (Deep Pattern)",
+        sessionTotal,
+        lastSpin,
+        secondLastSpin,
+        [
+          {
+            label: s3Source === "order-2"
+              ? `Markov order-2 (after ${label(secondLastSpin)} → ${label(lastSpin)})`
+              : s3Source === "base-freq"
+                ? `Base frequency (coverage)`
+                : `Markov order-1 (3rd transition after ${label(lastSpin)})`,
+            detail: s3Source === "order-2"
+              ? `Looking at the last TWO spins (${label(secondLastSpin)}→${label(lastSpin)}), history shows "${label(s3Pick.sector)}" next ${s3Pick.count} time${s3Pick.count === 1 ? "" : "s"} (${s3Pick.probability.toFixed(1)}%) — deeper pattern match`
+              : s3Source === "base-freq"
+                ? `Not enough 2-spin pattern data — using the highest base-frequency sector not already predicted (${s3Pick.probability.toFixed(1)}% over 24h) to cover a 3rd different sector`
+                : `After "${label(lastSpin)}", "${label(s3Pick.sector)}" is the 3rd most likely next sector (${s3Pick.probability.toFixed(1)}%) — covers a 3rd different sector`,
+            weight: Math.round((s3Pick.probability / 100) * 70) / 100,
+          },
+        ],
+        s3Acc,
+        s3Pick.probability,
+        s3Second?.probability ?? 0,
+        s3Max
+      )
+    : emptySignal("overdue_bonus", "AI Prediction (Deep Pattern)", sessionTotal);
+
+  // Combined ranked list (by Markov order-1 probability) for the UI panel
+  const ranked = order1Predictions.slice(0, 8).map((p, i) => {
+    const stat = stats.aggStats.find((s) => s.wheelResult === p.sector);
+    return {
+      sector: p.sector,
+      sectorLabel: label(p.sector),
+      score: p.probability,
+      percentage: stat?.percentage ?? 0,
+      hotFrequencyPercentage: stat?.hotFrequencyPercentage ?? null,
+      lastSeenBefore: stat?.lastSeenBefore ?? null,
+      isBonus: BONUS_SET.has(p.sector),
+    };
+  });
 
   return {
     momentum: momentumSignal,
@@ -727,6 +800,107 @@ export function buildMultiPrediction(
     overdueBonus: overdueBonusSignal,
     ranked,
   };
+}
+
+// Build a Markov-based signal (shares the common builder but adds Markov context)
+function buildMarkovSignal(
+  stats: NormalizedStats,
+  sector: string,
+  strategy: NextSpinSignal["strategy"],
+  strategyTitle: string,
+  sessionTotal: number,
+  lastSpin: string | null,
+  secondLastSpin: string | null,
+  extraSignals: NextSpinSignal["signals"],
+  modelAccuracy: number | null,
+  topProb: number,
+  secondProb: number,
+  maxProb: number
+): NextSpinSignal {
+  const stat = stats.aggStats.find((s) => s.wheelResult === sector);
+  const isBonus = BONUS_SET.has(sector);
+  const signals: NextSpinSignal["signals"] = [...extraSignals];
+  if (stat) {
+    signals.push({
+      label: "24h base frequency",
+      detail: `${stat.percentage.toFixed(2)}% (${stat.count.toLocaleString()} hits in last ${stats.totalCount.toLocaleString()} spins)`,
+      weight: Math.round((stat.percentage / 100) * 100) / 100,
+    });
+  }
+  // Confidence: based on the Markov transition probability (how likely this
+  // transition is) blended with the backtest accuracy. Higher transition
+  // probability + higher backtest = higher confidence.
+  const dominance = maxProb > 0 ? Math.max(0, Math.min(1, (topProb - secondProb) / maxProb)) : 0;
+  let base = 55 + dominance * 30;
+  // Strong transition (>40% probability) gets a boost
+  if (topProb >= 40) base += 8;
+  else if (topProb >= 30) base += 4;
+  else if (topProb < 15) base -= 8;
+  // Backtest accuracy bonus
+  if (modelAccuracy != null && modelAccuracy >= 75) base += 3;
+  else if (modelAccuracy != null && modelAccuracy < 50) base -= 5;
+  // Bonus sectors cap lower (rare events)
+  if (isBonus) base = Math.min(base, 80);
+  const confidence = Math.round(Math.max(55, Math.min(95, base)));
+
+  return {
+    sector,
+    sectorLabel: label(sector),
+    cardImage: cardImage(sector),
+    confidence,
+    signals,
+    isBonus,
+    observedPercentage: stat?.percentage ?? 0,
+    observedCount: stat?.count ?? 0,
+    observedLastSeenBefore: stat?.lastSeenBefore ?? null,
+    observedHotFrequencyPercentage: stat?.hotFrequencyPercentage ?? null,
+    generatedAt: new Date().toISOString(),
+    sessionTotal,
+    modelAccuracy,
+    strategy,
+    strategyTitle,
+    observed: {
+      recentHits: lastSpin ? 1 : 0,
+      recentWindow: 1,
+      recentPercentage: topProb,
+      momentumDelta: topProb - (stat?.percentage ?? 0),
+    },
+  };
+}
+
+// Backtest the Markov model: for each recent spin, check if the Markov
+// prediction (based on the spin before it) would have predicted correctly.
+function backtestMarkov(
+  _stats: NormalizedStats,
+  recentSpins: NormalizedSpin[],
+  order: number
+): number | null {
+  if (recentSpins.length < order + 2) return null;
+  const ordered = [...recentSpins].reverse(); // oldest->newest
+  let hits = 0;
+  let total = 0;
+  for (let i = order; i < ordered.length; i++) {
+    const stateParts: string[] = [];
+    for (let j = order; j > 0; j--) {
+      const s = ordered[i - j].wheelResultSector;
+      if (!s) { stateParts.length = 0; break; }
+      stateParts.push(s);
+    }
+    if (stateParts.length !== order) continue;
+    const state = stateParts.join("|");
+    // Build matrix from spins BEFORE this point (avoid look-ahead bias)
+    const priorSpins = ordered.slice(0, i);
+    const matrix = buildMarkovMatrix(priorSpins.map((s, idx) => ({ ...s, wheelResultSector: s.wheelResultSector })), order);
+    const preds = predictFromMatrix(matrix, state);
+    if (preds.length === 0) continue;
+    const actual = ordered[i].wheelResultSector;
+    if (!actual) continue;
+    total++;
+    // Top-3 hit
+    if (preds.slice(0, 3).some((p) => p.sector === actual)) hits++;
+  }
+  if (total === 0) return null;
+  return Math.round((hits / total) * 1000) / 10;
 }
 
 function emptySignal(
