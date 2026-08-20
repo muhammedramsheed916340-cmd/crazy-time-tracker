@@ -294,6 +294,25 @@ export function SignalCard({
         </div>
       )}
 
+      {/* AI Adaptive Learning Panel — shows what the model learned from recent mistakes */}
+      {(() => {
+        const learnSignal = signals?.momentum?.signals?.find(
+          (s) => s.label && s.label.includes("Adaptive learning")
+        );
+        if (!learnSignal) return null;
+        return (
+          <div className="mt-4 rounded-xl bg-gradient-to-r from-[#448AFF]/10 to-[#2962FF]/10 border border-[#448AFF]/30 px-3 py-2.5">
+            <div className="flex items-center gap-1.5 text-[10px] font-bold text-[#448AFF] uppercase tracking-wider mb-1">
+              <Sparkles className="w-3 h-3" />
+              AI Adaptive Learning (auto-correcting from mistakes)
+            </div>
+            <div className="text-[11px] text-[#bcc6e0] leading-relaxed">
+              {learnSignal.detail}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* Buttons */}
       <div className="flex gap-3 mt-5">
         <Button

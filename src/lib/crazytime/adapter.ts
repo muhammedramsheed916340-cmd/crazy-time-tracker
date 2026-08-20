@@ -595,6 +595,128 @@ function predictFromMatrix(
 }
 
 // ============================================================
+// ADAPTIVE LEARNING: computes recent per-Markov-order accuracy and adjusts
+// the ensemble weights. Orders that have been hitting recently get MORE
+// weight; orders that have been missing get LESS. This is the feedback loop
+// that makes the model "learn from mistakes" — when a prediction is wrong,
+// the system detects which order caused the miss and down-weights it.
+// ============================================================
+
+interface AdaptiveWeights {
+  w1: number; // weight for order-1
+  w2: number; // weight for order-2
+  w3: number; // weight for order-3
+  wBase: number; // weight for base frequency
+  learningInfo: string; // human-readable summary of what the model learned
+}
+
+function computeAdaptiveWeights(
+  spins: NormalizedSpin[],
+  stats: NormalizedStats
+): AdaptiveWeights {
+  // Default weights (used when not enough history to backtest)
+  const DEFAULT_W1 = 0.30;
+  const DEFAULT_W2 = 0.22;
+  const DEFAULT_W3 = 0.18;
+  const DEFAULT_WBASE = 0.30;
+
+  if (spins.length < 20) {
+    return {
+      w1: DEFAULT_W1,
+      w2: DEFAULT_W2,
+      w3: DEFAULT_W3,
+      wBase: DEFAULT_WBASE,
+      learningInfo: "Collecting data — using default weights",
+    };
+  }
+
+  // Backtest each order on the last 30 spins (recent window) and count how
+  // often each order's TOP pick matched the actual outcome.
+  const ordered = [...spins].reverse(); // oldest->newest
+  const recentWindow = Math.min(30, ordered.length - 5);
+  let o1Hits = 0, o2Hits = 0, o3Hits = 0, baseHits = 0;
+  let total = 0;
+
+  for (let i = Math.max(5, ordered.length - recentWindow); i < ordered.length; i++) {
+    const priorSpins = ordered.slice(0, i);
+    const lastSpin = ordered[i - 1].wheelResultSector;
+    const secondLast = ordered[i - 2]?.wheelResultSector;
+    const thirdLast = ordered[i - 3]?.wheelResultSector;
+    const actual = ordered[i].wheelResultSector;
+    if (!lastSpin || !actual) continue;
+
+    // Order-1 top pick
+    const m1 = buildMarkovMatrix(priorSpins, 1);
+    const o1Preds = predictFromMatrix(m1, lastSpin);
+    const o1Top = o1Preds[0]?.sector;
+    if (o1Top === actual) o1Hits++;
+
+    // Order-2 top pick
+    if (secondLast) {
+      const m2 = buildMarkovMatrix(priorSpins, 2);
+      const o2Preds = predictFromMatrix(m2, `${secondLast}|${lastSpin}`);
+      const o2Top = o2Preds[0]?.sector;
+      if (o2Top === actual) o2Hits++;
+    }
+
+    // Order-3 top pick
+    if (secondLast && thirdLast) {
+      const m3 = buildMarkovMatrix(priorSpins, 3);
+      const o3Preds = predictFromMatrix(m3, `${thirdLast}|${secondLast}|${lastSpin}`);
+      const o3Top = o3Preds[0]?.sector;
+      if (o3Top === actual) o3Hits++;
+    }
+
+    // Base frequency top pick (highest % sector)
+    const baseTop = [...stats.aggStats].sort((a, b) => b.percentage - a.percentage)[0]?.wheelResult;
+    if (baseTop === actual) baseHits++;
+
+    total++;
+  }
+
+  if (total === 0) {
+    return {
+      w1: DEFAULT_W1,
+      w2: DEFAULT_W2,
+      w3: DEFAULT_W3,
+      wBase: DEFAULT_WBASE,
+      learningInfo: "Not enough recent spins to adapt",
+    };
+  }
+
+  const o1Acc = o1Hits / total;
+  const o2Acc = o2Hits / total;
+  const o3Acc = o3Hits / total;
+  const baseAcc = baseHits / total;
+
+  // Convert accuracy to weights: weight = accuracy normalized so all sum to 1
+  // Use accuracy + a small floor (0.1) so a totally-missing order doesn't go to 0
+  const rawW1 = Math.max(0.1, o1Acc + 0.1);
+  const rawW2 = Math.max(0.1, o2Acc + 0.1);
+  const rawW3 = Math.max(0.1, o3Acc + 0.1);
+  const rawWBase = Math.max(0.1, baseAcc + 0.1);
+  const sum = rawW1 + rawW2 + rawW3 + rawWBase;
+
+  const w1 = rawW1 / sum;
+  const w2 = rawW2 / sum;
+  const w3 = rawW3 / sum;
+  const wBase = rawWBase / sum;
+
+  // Build a human-readable summary of what the model learned
+  const orders = [
+    { name: "order-1", acc: o1Acc, w: w1 },
+    { name: "order-2", acc: o2Acc, w: w2 },
+    { name: "order-3", acc: o3Acc, w: w3 },
+    { name: "base freq", acc: baseAcc, w: wBase },
+  ];
+  const best = [...orders].sort((a, b) => b.acc - a.acc)[0];
+  const worst = [...orders].sort((a, b) => a.acc - b.acc)[0];
+  const learningInfo = `Last ${total} spins: order-1 hit ${Math.round(o1Acc * 100)}%, order-2 ${Math.round(o2Acc * 100)}%, order-3 ${Math.round(o3Acc * 100)}%, base ${Math.round(baseAcc * 100)}%. Boosted ${best.name} (${Math.round(best.w * 100)}% weight), reduced ${worst.name} (${Math.round(worst.w * 100)}% weight) — adapting to what's working NOW.`;
+
+  return { w1, w2, w3, wBase, learningInfo };
+}
+
+// ============================================================
 // MULTI-ORDER MARKOV ENSEMBLE PREDICTION ENGINE
 // ------------------------------------------------------------
 // Blends multiple signals into a single ensemble score per sector:
@@ -655,10 +777,11 @@ export function buildMultiPrediction(
     : [];
 
   // Build the ensemble score for EVERY sector by blending all signals.
-  // Weights: order-1 (30%), order-2 (22%), order-3 (18%), base freq (30%).
-  // Anti-repeat: the last actual spin is heavily penalized (repeats only ~22%
-  // likely, so we cut its score by 70%) — this prevents the model from just
-  // echoing the last result and forces it to predict a DIFFERENT sector.
+  // ADAPTIVE WEIGHTING: compute recent per-order accuracy by backtesting, then
+  // dynamically adjust the weights. Orders that have been hitting recently
+  // get MORE weight; orders that have been missing get LESS weight. This is the
+  // "learning from mistakes" loop — the model adapts to what's working NOW.
+  const adaptiveWeights = computeAdaptiveWeights(spins, stats);
   const allSectors = stats.aggStats.map((s) => s.wheelResult);
   const ensemblePicks: EnsemblePick[] = allSectors.map((sector) => {
     const o1 = order1Predictions.find((p) => p.sector === sector);
@@ -669,8 +792,13 @@ export function buildMultiPrediction(
     const o2Prob = o2?.probability ?? 0;
     const o3Prob = o3?.probability ?? 0;
     const baseProb = base?.percentage ?? 0;
-    // Ensemble blend
-    let score = o1Prob * 0.30 + o2Prob * 0.22 + o3Prob * 0.18 + baseProb * 0.30;
+    // ADAPTIVE Ensemble blend: weights dynamically adjusted based on which
+    // Markov orders have been hitting recently (learning from mistakes).
+    let score =
+      o1Prob * adaptiveWeights.w1 +
+      o2Prob * adaptiveWeights.w2 +
+      o3Prob * adaptiveWeights.w3 +
+      baseProb * adaptiveWeights.wBase;
     // Anti-repeat penalty: if this sector == last spin, cut score by 50%
     // (repeats happen ~22% of the time vs ~39% base for "1", so a 50% cut
     // is a fair penalty — strong enough to usually avoid copying, but not
@@ -703,6 +831,9 @@ export function buildMultiPrediction(
     { key: "overdueBonus", title: "AI Ensemble (3rd Pick)" },
   ];
 
+  // Build a learning-info string for the UI
+  const learningInfo = adaptiveWeights.learningInfo;
+
   const buildEnsembleSignal = (
     pick: EnsemblePick,
     rank: number,
@@ -712,10 +843,19 @@ export function buildMultiPrediction(
     const stat = stats.aggStats.find((s) => s.wheelResult === pick.sector);
     const isBonus = pick.isBonus;
     const signals: NextSpinSignal["signals"] = [];
+    // On the TOP pick, show the adaptive learning info first (what the model
+    // learned from recent mistakes)
+    if (rank === 1 && learningInfo) {
+      signals.push({
+        label: "Adaptive learning (from recent mistakes)",
+        detail: learningInfo,
+        weight: 0,
+      });
+    }
     // Explain which Markov orders contributed
     signals.push({
       label: `Markov order-1 (after ${label(lastSpin)})`,
-      detail: `After "${label(lastSpin)}", "${label(pick.sector)}" historically comes next ${pick.order1Prob.toFixed(1)}% of the time`,
+      detail: `After "${label(lastSpin)}", "${label(pick.sector)}" historically comes next ${pick.order1Prob.toFixed(1)}% of the time (weight: ${Math.round(adaptiveWeights.w1 * 100)}%)`,
       weight: Math.round((pick.order1Prob / 100) * 35) / 100,
     });
     if (pick.order2Prob > 0 || (order2Predictions.length > 0 && rank < 3)) {
