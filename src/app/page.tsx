@@ -16,10 +16,10 @@ import { useCrazyTimeEvents, useCrazyTimeStats, useCrazyTimePredict } from "@/ho
 import { RefreshCw, Radio, Sparkles, Gift } from "lucide-react";
 
 export default function Home() {
-  // Live spin history - refresh every 15s
-  const events = useCrazyTimeEvents(20, 24, 15000);
-  // Live statistics + derived prediction - refresh every 30s
-  const stats = useCrazyTimeStats(24, 30000);
+  // Live spin history - refresh every 8s (was 15s) for faster updates
+  const events = useCrazyTimeEvents(20, 24, 8000);
+  // Live statistics + derived prediction - refresh every 15s (was 30s)
+  const stats = useCrazyTimeStats(24, 15000);
   // Live prediction (on-demand, used for the accuracy tracker too)
   const predict = useCrazyTimePredict();
   // Bonus Center popup state

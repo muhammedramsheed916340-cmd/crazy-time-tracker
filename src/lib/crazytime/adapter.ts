@@ -638,7 +638,8 @@ function computeAdaptiveWeights(
   let total = 0;
 
   for (let i = Math.max(5, ordered.length - recentWindow); i < ordered.length; i++) {
-    const priorSpins = ordered.slice(0, i);
+    // Only use the last 100 prior spins (not all) for performance
+    const priorSpins = ordered.slice(Math.max(0, i - 100), i);
     const lastSpin = ordered[i - 1].wheelResultSector;
     const secondLast = ordered[i - 2]?.wheelResultSector;
     const thirdLast = ordered[i - 3]?.wheelResultSector;
@@ -689,12 +690,15 @@ function computeAdaptiveWeights(
   const o3Acc = o3Hits / total;
   const baseAcc = baseHits / total;
 
-  // Convert accuracy to weights: weight = accuracy normalized so all sum to 1
-  // Use accuracy + a small floor (0.1) so a totally-missing order doesn't go to 0
-  const rawW1 = Math.max(0.1, o1Acc + 0.1);
-  const rawW2 = Math.max(0.1, o2Acc + 0.1);
-  const rawW3 = Math.max(0.1, o3Acc + 0.1);
-  const rawWBase = Math.max(0.1, baseAcc + 0.1);
+  // Convert accuracy to weights: weight = accuracy^2 normalized so all sum to 1.
+  // Squaring makes the weighting MORE aggressive — orders that hit often get
+  // significantly more weight, and orders that miss often get much less.
+  // This amplifies the "learning from mistakes" effect.
+  // Floor of 0.05 so no signal goes completely to zero (avoids overfitting).
+  const rawW1 = Math.max(0.05, o1Acc * o1Acc + 0.05);
+  const rawW2 = Math.max(0.05, o2Acc * o2Acc + 0.05);
+  const rawW3 = Math.max(0.05, o3Acc * o3Acc + 0.05);
+  const rawWBase = Math.max(0.05, baseAcc * baseAcc + 0.05);
   const sum = rawW1 + rawW2 + rawW3 + rawWBase;
 
   const w1 = rawW1 / sum;
@@ -825,10 +829,10 @@ export function buildMultiPrediction(
   const ensembleAcc = backtestEnsemble(spins, stats);
 
   // Build the 3 signals
-  const strategyMeta: { key: "momentum" | "hotTrend" | "overdueBonus"; title: string }[] = [
+  const strategyMeta: { key: NextSpinSignal["strategy"]; title: string }[] = [
     { key: "momentum", title: "AI Ensemble (Top Pick)" },
-    { key: "hotTrend", title: "AI Ensemble (2nd Pick)" },
-    { key: "overdueBonus", title: "AI Ensemble (3rd Pick)" },
+    { key: "hot_trend", title: "AI Ensemble (2nd Pick)" },
+    { key: "overdue_bonus", title: "AI Ensemble (3rd Pick)" },
   ];
 
   // Build a learning-info string for the UI
@@ -837,7 +841,7 @@ export function buildMultiPrediction(
   const buildEnsembleSignal = (
     pick: EnsemblePick,
     rank: number,
-    strategyKey: "momentum" | "hotTrend" | "overdueBonus",
+    strategyKey: NextSpinSignal["strategy"],
     strategyTitle: string
   ): NextSpinSignal => {
     const stat = stats.aggStats.find((s) => s.wheelResult === pick.sector);
@@ -970,8 +974,13 @@ function backtestEnsemble(
   const ordered = [...recentSpins].reverse(); // oldest->newest
   let hits = 0;
   let total = 0;
-  for (let i = 5; i < ordered.length; i++) {
-    const priorSpins = ordered.slice(0, i);
+  // Only backtest the last 50 spins (not all 300) for performance — O(n²) is
+  // too heavy with 300 spins, causing the server to crash. 50 is enough for
+  // a reliable accuracy estimate.
+  const startIdx = Math.max(5, ordered.length - 50);
+  for (let i = startIdx; i < ordered.length; i++) {
+    // Only use the last 100 prior spins (not all 300) for performance
+    const priorSpins = ordered.slice(Math.max(0, i - 100), i);
     const lastSpin = ordered[i - 1].wheelResultSector;
     const secondLast = ordered[i - 2].wheelResultSector;
     const thirdLast = ordered[i - 3].wheelResultSector;

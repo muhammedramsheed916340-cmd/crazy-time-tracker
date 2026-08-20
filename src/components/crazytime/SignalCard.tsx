@@ -23,7 +23,10 @@ import {
   XCircle,
 } from "lucide-react";
 
-const COUNTDOWN_SECONDS = 60;
+// Faster countdown (30s) because Crazy Time spins arrive every ~40-50s.
+// The new-spin detector polls every 5s, so predictions update within 5s of a
+// new spin arriving — no need to wait for the full countdown.
+const COUNTDOWN_SECONDS = 30;
 
 type StrategyKey = "momentum" | "hotTrend" | "overdueBonus";
 
@@ -119,9 +122,9 @@ export function SignalCard({
     };
   }, [autoOn, runPredict]);
 
-  // NEW SPIN DETECTOR: poll the events API every 10s. When a new spin arrives
-  // (different ID from the last one we saw), auto-refresh the prediction
-  // immediately so the user always sees predictions based on the LATEST result.
+  // NEW SPIN DETECTOR: poll the events API every 5s (was 10s). Crazy Time
+  // spins arrive every ~40-50s, so 5s polling means we detect a new spin
+  // within 5 seconds of it happening — predictions update almost instantly.
   useEffect(() => {
     if (!autoOn) {
       if (spinCheckRef.current) {
@@ -141,7 +144,6 @@ export function SignalCard({
         const latestId = json?.spins?.[0]?.id;
         if (!latestId) return;
         if (lastSeenSpinId === null) {
-          // First load — just record the ID, don't refresh
           setLastSeenSpinId(latestId);
           return;
         }
@@ -155,9 +157,9 @@ export function SignalCard({
         // ignore polling errors
       }
     };
-    // Check immediately, then every 10s
+    // Check immediately, then every 5s (was 10s)
     void checkForNewSpin();
-    spinCheckRef.current = setInterval(checkForNewSpin, 10000);
+    spinCheckRef.current = setInterval(checkForNewSpin, 5000);
     return () => {
       if (spinCheckRef.current) clearInterval(spinCheckRef.current);
       spinCheckRef.current = null;

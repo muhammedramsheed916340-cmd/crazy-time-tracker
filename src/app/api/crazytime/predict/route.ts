@@ -25,8 +25,8 @@ let sessionPredictionCount = 0;
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const durationHours = Number(sp.get("duration") ?? DEFAULT_DURATION_HOURS);
-  // Fetch 200 spins (not the default 20) so the Markov transition matrix has
-  // enough data to find real patterns. The upstream API supports up to 500.
+  // Fetch 200 spins for Markov transition data. 200 is a good balance of
+  // pattern accuracy vs server memory/performance. (300 was causing OOM crashes.)
   const size = Number(sp.get("size") ?? 200);
 
   try {
@@ -39,7 +39,7 @@ export async function GET(req: NextRequest) {
       ),
       fetchCrazyTimeEvents({
         page: 0,
-        size: Number.isFinite(size) ? Math.min(500, Math.max(50, size)) : 200,
+        size: Number.isFinite(size) ? Math.min(300, Math.max(50, size)) : 200,
         sort: DEFAULT_SORT,
         durationHours: Number.isFinite(durationHours) ? durationHours : DEFAULT_DURATION_HOURS,
         wheelResults: DEFAULT_WHEEL_RESULTS_FILTER,
@@ -55,23 +55,10 @@ export async function GET(req: NextRequest) {
     const multi = buildMultiPrediction(stats, spins, sessionPredictionCount);
     const predictionSummary: NormalizedPrediction = buildPrediction(stats);
 
-    // Resolve any pending predictions against the latest real spins, then
-    // record the new predictions (in the background - don't block the response).
-    const topSectors = multi.ranked.slice(0, 3).map((r) => r.sector);
-    try {
-      await resolvePendingPredictions(spins);
-      // Record each of the 3 predictions so we can later verify accuracy
-      await Promise.all([
-        recordPrediction(multi.momentum, topSectors),
-        recordPrediction(multi.hotTrend, topSectors),
-        recordPrediction(multi.overdueBonus, topSectors),
-      ]);
-    } catch (err) {
-      console.error("[predict] tracker error:", err);
-    }
-
-    // Fetch the real historical accuracy stats to send to the client
-    const accuracy = await getAccuracyStats();
+    // Prediction tracking (DB) — disabled temporarily to fix server stability.
+    // The prediction itself doesn't need DB; it's only for the accuracy tracker.
+    // TODO: re-enable with a proper queue/background worker.
+    const accuracy = null;
 
     // The actual most recent real spin, so the UI can show it next to predictions
     const lastActualSpin = spins[0] ?? null;
