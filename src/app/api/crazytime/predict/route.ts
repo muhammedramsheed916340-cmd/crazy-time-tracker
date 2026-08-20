@@ -25,10 +25,12 @@ let sessionPredictionCount = 0;
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const durationHours = Number(sp.get("duration") ?? DEFAULT_DURATION_HOURS);
-  const size = Number(sp.get("size") ?? DEFAULT_SIZE);
+  // Fetch 200 spins (not the default 20) so the Markov transition matrix has
+  // enough data to find real patterns. The upstream API supports up to 500.
+  const size = Number(sp.get("size") ?? 200);
 
   try {
-    // Fetch real stats and a larger window of real recent spins in parallel.
+    // Fetch real stats and a large window of real recent spins in parallel.
     const [statsRaw, eventsRes] = await Promise.all([
       fetchCrazyTimeStats(
         Number.isFinite(durationHours) ? durationHours : DEFAULT_DURATION_HOURS,
@@ -37,7 +39,7 @@ export async function GET(req: NextRequest) {
       ),
       fetchCrazyTimeEvents({
         page: 0,
-        size: Number.isFinite(size) ? size : DEFAULT_SIZE,
+        size: Number.isFinite(size) ? Math.min(500, Math.max(50, size)) : 200,
         sort: DEFAULT_SORT,
         durationHours: Number.isFinite(durationHours) ? durationHours : DEFAULT_DURATION_HOURS,
         wheelResults: DEFAULT_WHEEL_RESULTS_FILTER,
