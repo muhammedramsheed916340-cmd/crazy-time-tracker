@@ -10,12 +10,16 @@ import {
   CRAZY_TIME_TABLE_ID,
 } from "@/lib/crazytime/constants";
 import type { NextSpinSignal, NormalizedPrediction } from "@/lib/crazytime/types";
+import {
+  recordPrediction,
+  resolvePendingPredictions,
+  getAccuracyStats,
+} from "@/lib/crazytime/tracker";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-// In-memory session counter (per server instance). This is real - it counts
-// how many prediction requests have been served since the process started.
+// In-memory session counter (per server instance).
 let sessionPredictionCount = 0;
 
 export async function GET(req: NextRequest) {
@@ -25,7 +29,6 @@ export async function GET(req: NextRequest) {
 
   try {
     // Fetch real stats and a larger window of real recent spins in parallel.
-    // We fetch up to 30 recent spins so the momentum strategy has enough data.
     const [statsRaw, eventsRes] = await Promise.all([
       fetchCrazyTimeStats(
         Number.isFinite(durationHours) ? durationHours : DEFAULT_DURATION_HOURS,
@@ -50,6 +53,24 @@ export async function GET(req: NextRequest) {
     const multi = buildMultiPrediction(stats, spins, sessionPredictionCount);
     const predictionSummary: NormalizedPrediction = buildPrediction(stats);
 
+    // Resolve any pending predictions against the latest real spins, then
+    // record the new predictions (in the background - don't block the response).
+    const topSectors = multi.ranked.slice(0, 3).map((r) => r.sector);
+    try {
+      await resolvePendingPredictions(spins);
+      // Record each of the 3 predictions so we can later verify accuracy
+      await Promise.all([
+        recordPrediction(multi.momentum, topSectors),
+        recordPrediction(multi.hotTrend, topSectors),
+        recordPrediction(multi.overdueBonus, topSectors),
+      ]);
+    } catch (err) {
+      console.error("[predict] tracker error:", err);
+    }
+
+    // Fetch the real historical accuracy stats to send to the client
+    const accuracy = await getAccuracyStats();
+
     return NextResponse.json(
       {
         signals: {
@@ -59,6 +80,7 @@ export async function GET(req: NextRequest) {
         } as Record<string, NextSpinSignal>,
         ranked: multi.ranked,
         predictionSummary,
+        accuracy,
         recentSpinsCount: spins.length,
         totalSpins: eventsRes.totalCount,
         fetchedAt: new Date().toISOString(),
@@ -77,6 +99,7 @@ export async function GET(req: NextRequest) {
         error: msg,
         signals: null,
         ranked: [],
+        accuracy: null,
         fetchedAt: new Date().toISOString(),
       },
       { status: 200, headers: { "Cache-Control": "no-store" } }

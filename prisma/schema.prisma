@@ -1,9 +1,6 @@
 // This is your Prisma schema file,
 // learn more about it in the docs: https://pris.ly/d/prisma-schema
 
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
-
 generator client {
   provider = "prisma-client-js"
 }
@@ -29,4 +26,37 @@ model Post {
   authorId  String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+}
+
+// Tracks every prediction made so we can verify accuracy against actual results.
+// This is the REAL accuracy tracker - no fake numbers.
+model PredictionRecord {
+  id              String   @id @default(cuid())
+  // Which strategy produced this prediction
+  strategy        String
+  // The sector we predicted (raw key, e.g. "1", "Pachinko")
+  predictedSector String
+  // The sector label (e.g. "One", "Pachinko")
+  predictedLabel  String
+  // Top-3 predicted sectors at the time (JSON array of raw keys)
+  topSectors      String
+  // Confidence shown to the user (0-100)
+  confidence      Int
+  // Real observed hit rate at prediction time (%)
+  observedHitRate  Float
+  // When the prediction was made
+  predictedAt     DateTime @default(now())
+  // The actual next spin's sector (filled in when the next spin resolves)
+  actualSector    String?
+  // The actual next spin's event id from the upstream API
+  actualEventId   String?
+  // When the actual result was recorded
+  resolvedAt      DateTime?
+  // Whether the prediction was correct (actualSector === predictedSector)
+  isHit           Boolean?
+  // Whether the prediction was in the top-3 (partial credit)
+  isTop3Hit       Boolean?
+
+  @@index([strategy, predictedAt])
+  @@index([resolvedAt])
 }

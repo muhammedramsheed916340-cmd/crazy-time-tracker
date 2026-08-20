@@ -50,9 +50,29 @@ const STRATEGY_META: Record<
   },
 };
 
-export function SignalCard() {
-  const { signals, ranked, recentSpinsCount, totalSpins, loading, error, lastUpdated, fetchNow } =
-    useCrazyTimePredict();
+interface SignalCardProps {
+  signals: ReturnType<typeof useCrazyTimePredict>["signals"];
+  ranked: ReturnType<typeof useCrazyTimePredict>["ranked"];
+  accuracy: ReturnType<typeof useCrazyTimePredict>["accuracy"];
+  recentSpinsCount: number;
+  totalSpins: number;
+  loading: boolean;
+  error: string | null;
+  lastUpdated: string | null;
+  fetchNow: () => Promise<void>;
+}
+
+export function SignalCard({
+  signals,
+  ranked,
+  accuracy,
+  recentSpinsCount,
+  totalSpins,
+  loading,
+  error,
+  lastUpdated,
+  fetchNow,
+}: SignalCardProps) {
   const [countdown, setCountdown] = useState<number>(COUNTDOWN_SECONDS);
   const [autoOn, setAutoOn] = useState(false);
   const [analysing, setAnalysing] = useState(false);
@@ -120,19 +140,28 @@ export function SignalCard() {
     return () => document.removeEventListener("visibilitychange", onVis);
   }, [autoOn, runPredict]);
 
-  // Stats grid - all REAL values
+  // Stats grid - all REAL values.
+  // Use the REAL verified accuracy from the prediction tracker (hit rate of
+  // past predictions vs actual spins), falling back to the backtested accuracy
+  // only when no real predictions have been verified yet.
+  const verifiedHitRate = accuracy && accuracy.resolved > 0 ? accuracy.hitRate : null;
+  const verifiedTop3Rate = accuracy && accuracy.resolved > 0 ? accuracy.top3HitRate : null;
   const momAcc = signals?.momentum?.modelAccuracy;
   const hotAcc = signals?.hotTrend?.modelAccuracy;
   const bonusAcc = signals?.overdueBonus?.modelAccuracy;
-  const avgAcc =
+  const avgBacktest =
     momAcc != null || hotAcc != null || bonusAcc != null
       ? (((momAcc ?? 0) + (hotAcc ?? 0) + (bonusAcc ?? 0)) /
           [momAcc, hotAcc, bonusAcc].filter((x) => x != null).length)
       : null;
+  // Show the real verified accuracy when available, otherwise the backtest estimate
+  const displayAccuracy = verifiedTop3Rate != null ? verifiedTop3Rate : avgBacktest;
   const statTotal = totalSpins;
-  const statAccuracy = avgAcc != null ? `${avgAcc.toFixed(1)}%` : "—";
+  const statAccuracy =
+    displayAccuracy != null ? `${displayAccuracy.toFixed(1)}%` : "—";
   const statBonus = ranked.filter((r) => r.isBonus).length;
   const statLive = signals ? Math.min(9999, Math.max(1, recentSpinsCount * 7 + 1)) : 0;
+  const statVerified = accuracy?.resolved ?? 0;
 
   const activeSignal: NextSpinSignal | null =
     signals?.[activeStrategy] ?? signals?.momentum ?? null;
@@ -301,10 +330,10 @@ export function SignalCard() {
       <div className="mt-4">
         <div className="text-[11px] text-[#8899cc] mb-2 flex items-center gap-1.5">
           <TrendingUp className="w-3.5 h-3.5 text-[#448AFF]" />
-          AI Confidence: {activeSignal ? `${activeSignal.confidence}%` : "0%"}
+          Real next-spin probability: {activeSignal ? `${activeSignal.confidence}%` : "0%"}
           {activeSignal?.modelAccuracy != null && (
             <span className="ml-auto text-[#5a6a99]">
-              Strategy accuracy: {activeSignal.modelAccuracy.toFixed(1)}%
+              Backtest: {activeSignal.modelAccuracy.toFixed(1)}%
             </span>
           )}
         </div>
@@ -312,10 +341,14 @@ export function SignalCard() {
           <div
             className="h-full rounded-full transition-all duration-1000"
             style={{
-              width: `${activeSignal?.confidence ?? 0}%`,
+              width: `${Math.min(100, (activeSignal?.confidence ?? 0))}%`,
               background: `linear-gradient(90deg, ${STRATEGY_META[activeStrategy].accent}, #2962FF)`,
             }}
           />
+        </div>
+        <div className="text-[9px] text-[#5a6a99] mt-1 leading-tight">
+          This is the honest probability of the next spin landing on this sector —
+          not inflated. For a random Crazy Time wheel, the real max is ~40%.
         </div>
       </div>
 
@@ -396,7 +429,7 @@ export function SignalCard() {
           <StatItem
             icon={<CheckCircle2 className="w-3 h-3" />}
             value={statAccuracy}
-            label="AVG ACCURACY"
+            label={verifiedTop3Rate != null ? "VERIFIED ACC." : "AVG ACCURACY"}
           />
           <StatItem
             icon={<Target className="w-3 h-3" />}
@@ -405,8 +438,8 @@ export function SignalCard() {
           />
           <StatItem
             icon={<Users className="w-3 h-3" />}
-            value={statLive > 0 ? `${(statLive / 1000).toFixed(1)}k` : "—"}
-            label="SESSION"
+            value={String(statVerified)}
+            label="VERIFIED"
           />
         </div>
       </div>
@@ -419,17 +452,31 @@ export function SignalCard() {
             ["hotTrend", "Hot Trend"],
             ["overdueBonus", "Overdue Bonus"],
           ] as [StrategyKey, string][]).map(([k, name]) => {
-            const acc = signals[k]?.modelAccuracy;
+            const backtest = signals[k]?.modelAccuracy;
+            // Look up the real verified accuracy for this strategy
+            const verified = accuracy?.perStrategy.find(
+              (p) => p.strategy === (k === "hotTrend" ? "hot_trend" : k === "overdueBonus" ? "overdue_bonus" : k)
+            );
+            const acc = verified && verified.resolved > 0 ? verified.hitRate : backtest;
+            const isVerified = verified && verified.resolved > 0;
             return (
-              <div
+              <button
                 key={k}
-                className="rounded-md bg-[#0d1020] border border-[#1e2240] px-2 py-1 text-center"
+                onClick={() => setActiveStrategy(k)}
+                className={`rounded-md px-2 py-1.5 text-center border transition ${
+                  activeStrategy === k
+                    ? "bg-[rgba(68,138,255,0.1)] border-[rgba(68,138,255,0.4)]"
+                    : "bg-[#0d1020] border-[#1e2240] hover:border-[#2a2e4a]"
+                }`}
               >
                 <div className="text-[#5a6a99]">{name}</div>
                 <div className="font-bold text-white">
                   {acc != null ? `${acc.toFixed(1)}%` : "—"}
                 </div>
-              </div>
+                <div className="text-[8px] text-[#5a6a99]">
+                  {isVerified ? `verified (${verified?.resolved})` : "backtest"}
+                </div>
+              </button>
             );
           })}
         </div>

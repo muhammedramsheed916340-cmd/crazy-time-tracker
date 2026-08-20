@@ -18,6 +18,36 @@ export interface StatsResponse {
   fetchedAt: string;
 }
 
+export interface AccuracyStats {
+  total: number;
+  resolved: number;
+  hits: number;
+  top3Hits: number;
+  hitRate: number;
+  top3HitRate: number;
+  perStrategy: {
+    strategy: string;
+    total: number;
+    resolved: number;
+    hits: number;
+    top3Hits: number;
+    hitRate: number;
+    top3HitRate: number;
+  }[];
+  recent: {
+    id: string;
+    strategy: string;
+    predictedSector: string;
+    predictedLabel: string;
+    confidence: number;
+    actualSector: string | null;
+    isHit: boolean | null;
+    isTop3Hit: boolean | null;
+    predictedAt: string;
+    resolvedAt: string | null;
+  }[];
+}
+
 export interface PredictResponse {
   signals: {
     momentum: NextSpinSignal;
@@ -34,6 +64,7 @@ export interface PredictResponse {
     isBonus: boolean;
   }[];
   predictionSummary?: NormalizedPrediction;
+  accuracy?: AccuracyStats | null;
   recentSpinsCount: number;
   totalSpins: number;
   fetchedAt: string;
@@ -195,8 +226,8 @@ export function useCrazyTimeSpin(id: string | null | undefined, intervalMs = 150
   };
 }
 
-// On-demand prediction hook. Does NOT auto-poll - the user clicks "Get Signal"
-// to fetch a fresh real-data prediction. The countdown timer in the UI calls refresh().
+// On-demand prediction hook. Auto-fetches once on mount so the AccuracyTracker
+// has data immediately, then fetches on demand when the user clicks "Get Signal".
 export function useCrazyTimePredict() {
   const [data, setData] = useState<PredictResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -225,9 +256,16 @@ export function useCrazyTimePredict() {
     }
   }, []);
 
+  // Auto-fetch once on mount so the AccuracyTracker + SignalCard tabs populate
+  // immediately without requiring the user to click "Get Signal" first.
+  useEffect(() => {
+    void fetchNow();
+  }, [fetchNow]);
+
   return {
     signals: data?.signals ?? null,
     ranked: data?.ranked ?? [],
+    accuracy: data?.accuracy ?? null,
     recentSpinsCount: data?.recentSpinsCount ?? 0,
     totalSpins: data?.totalSpins ?? 0,
     predictionSummary: data?.predictionSummary ?? null,

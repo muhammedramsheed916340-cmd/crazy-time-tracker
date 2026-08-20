@@ -391,10 +391,36 @@ function overdueBonusScore(
   return overdue * 0.75 + basePercentage * 0.25;
 }
 
-function clampConfidence(raw: number): number {
-  // Scale raw 0-100 score into a readable 55-95 confidence band
-  const clamped = Math.max(0, Math.min(100, raw));
-  return Math.round(55 + (clamped / 100) * 40);
+// Confidence is the REAL probability that this strategy's top pick lands on
+// the next actual spin. It is computed from the strategy's observed hit rate
+// blended with the backtested accuracy. This produces DIFFERENT confidence
+// values per strategy (instead of all being stuck at 95%).
+function computeConfidence(
+  observedHitRatePct: number, // e.g. 40.0 means the sector hit 40% recently
+  backtestAccuracyPct: number | null, // e.g. 82.5 means the strategy's top-3 hit 82.5% of recent spins
+  isOverdueBonus: boolean
+): number {
+  // Base probability of the next spin landing on this sector.
+  // For a fair Crazy Time wheel, max real probability is ~40% (sector "1").
+  // We do NOT inflate this to 95% — that would be dishonest for a random game.
+  const baseProb = Math.max(0, Math.min(60, observedHitRatePct));
+
+  if (isOverdueBonus) {
+    // Bonus rounds are rare (1.5-9% each). The "overdue" signal means the
+    // probability is slightly elevated above baseline, but still small.
+    // Cap at 25% so it never claims high confidence on rare events.
+    return Math.round(Math.min(25, Math.max(3, baseProb * 1.8)));
+  }
+
+  // Blend observed hit rate (what actually happens) with backtest accuracy
+  // (how often the strategy has been right). This is the honest probability.
+  const backtest = backtestAccuracyPct ?? 50;
+  // Weighted blend: 60% observed hit rate, 40% historical accuracy
+  const blended = baseProb * 0.6 + backtest * 0.4;
+
+  // Cap at 60% — for a genuinely random Crazy Time wheel, no single sector
+  // can be predicted with >60% confidence. Anything higher is dishonest.
+  return Math.round(Math.max(5, Math.min(60, blended)));
 }
 
 function buildSignalCommon(
@@ -402,8 +428,7 @@ function buildSignalCommon(
   sector: string,
   strategy: NextSpinSignal["strategy"],
   strategyTitle: string,
-  score: number,
-  maxScore: number,
+  observedHitRatePct: number,
   sessionTotal: number,
   observedExtra: NextSpinSignal["observed"],
   extraSignals: NextSpinSignal["signals"],
@@ -426,11 +451,16 @@ function buildSignalCommon(
       });
     }
   }
+  const confidence = computeConfidence(
+    observedHitRatePct,
+    modelAccuracy,
+    strategy === "overdue_bonus"
+  );
   return {
     sector,
     sectorLabel: label(sector),
     cardImage: cardImage(sector),
-    confidence: clampConfidence((score / maxScore) * 100),
+    confidence,
     signals,
     isBonus,
     observedPercentage: stat?.percentage ?? 0,
@@ -502,16 +532,17 @@ export function buildMultiPrediction(
     })
     .sort((a, b) => b.score - a.score);
   const momentumTop = momentumRanked[0];
-  const momentumMax = Math.max(1, ...momentumRanked.map((r) => r.score));
   const momentumAcc = backtestStrategy(stats, spins, "momentum");
+  // For momentum, the observed hit rate is the real % of recent spins
+  // that landed on this sector.
+  const momentumHitRate = momentumTop ? momentumTop.recentPercentage : 0;
   const momentumSignal = momentumTop
     ? buildSignalCommon(
         stats,
         momentumTop.sector,
         "momentum",
         "Next Spin (Live Momentum)",
-        momentumTop.score,
-        momentumMax,
+        momentumHitRate,
         sessionTotal,
         {
           recentHits: momentumTop.recentHits,
@@ -562,16 +593,16 @@ export function buildMultiPrediction(
     })
     .sort((a, b) => b.score - a.score);
   const hotTop = hotRanked[0];
-  const hotMax = Math.max(1, ...hotRanked.map((r) => r.score));
   const hotAcc = backtestStrategy(stats, spins, "hot_trend");
+  // For hot trend, the observed hit rate is the real 24h % for that sector.
+  const hotHitRate = hotTop ? hotTop.percentage : 0;
   const hotTrendSignal = hotTop
     ? buildSignalCommon(
         stats,
         hotTop.sector,
         "hot_trend",
         "Hot Trend (24h Streak)",
-        hotTop.score,
-        hotMax,
+        hotHitRate,
         sessionTotal,
         {},
         [
@@ -603,16 +634,16 @@ export function buildMultiPrediction(
     })
     .sort((a, b) => b.score - a.score);
   const bonusTop = bonusRanked[0];
-  const bonusMax = Math.max(1, ...bonusRanked.map((r) => r.score));
   const bonusAcc = backtestStrategy(stats, spins, "overdue_bonus");
+  // For overdue bonus, the observed hit rate is the real 24h % for that bonus sector.
+  const bonusHitRate = bonusTop ? bonusTop.percentage : 0;
   const overdueBonusSignal = bonusTop
     ? buildSignalCommon(
         stats,
         bonusTop.sector,
         "overdue_bonus",
         "Overdue Bonus Round",
-        bonusTop.score,
-        bonusMax,
+        bonusHitRate,
         sessionTotal,
         {},
         [

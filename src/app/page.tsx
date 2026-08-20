@@ -10,7 +10,8 @@ import { LatestTopMultipliers } from "@/components/crazytime/LatestTopMultiplier
 import { Prediction } from "@/components/crazytime/Prediction";
 import { LiveStatusBar } from "@/components/crazytime/LiveStatusBar";
 import { SignalCard } from "@/components/crazytime/SignalCard";
-import { useCrazyTimeEvents, useCrazyTimeStats } from "@/hooks/use-crazy-time";
+import { AccuracyTracker } from "@/components/crazytime/AccuracyTracker";
+import { useCrazyTimeEvents, useCrazyTimeStats, useCrazyTimePredict } from "@/hooks/use-crazy-time";
 import { RefreshCw, Radio, Sparkles } from "lucide-react";
 
 export default function Home() {
@@ -18,6 +19,8 @@ export default function Home() {
   const events = useCrazyTimeEvents(20, 24, 15000);
   // Live statistics + derived prediction - refresh every 30s
   const stats = useCrazyTimeStats(24, 30000);
+  // Live prediction (on-demand, used for the accuracy tracker too)
+  const predict = useCrazyTimePredict();
 
   const latestSettledAt = useMemo(() => {
     return events.spins[0]?.settledAt ?? null;
@@ -81,9 +84,24 @@ export default function Home() {
           />
         </div>
 
-        {/* Hero Signal Card (Revo Fixer style) */}
-        <div className="max-w-3xl mx-auto w-full">
-          <SignalCard />
+        {/* Hero Signal Card (Revo Fixer style) + Accuracy Tracker */}
+        <div className="max-w-3xl mx-auto w-full grid grid-cols-1 gap-4 sm:gap-6">
+          <SignalCard
+            signals={predict.signals}
+            ranked={predict.ranked}
+            accuracy={predict.accuracy}
+            recentSpinsCount={predict.recentSpinsCount}
+            totalSpins={predict.totalSpins}
+            loading={predict.loading}
+            error={predict.error}
+            lastUpdated={predict.lastUpdated}
+            fetchNow={predict.fetchNow}
+          />
+          <AccuracyTracker
+            accuracy={predict.accuracy}
+            loading={predict.loading}
+            error={predict.error}
+          />
         </div>
 
         {/* Video + Spin history row */}
