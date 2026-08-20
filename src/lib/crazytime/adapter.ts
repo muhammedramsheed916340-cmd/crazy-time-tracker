@@ -339,6 +339,10 @@ export function relativeTime(iso: string | null | undefined): string {
 
 const BONUS_SET = new Set<string>(BONUS_TYPES);
 
+// Short recent window for responsive momentum (changes visibly as spins arrive)
+const MOMENTUM_WINDOW = 8;
+const MOMENTUM_DECAY = 0.85; // faster decay = more responsive to recent spins
+
 // ---- Strategy 1: Momentum (recency-weighted recent spins) ----
 function momentumScore(
   sector: string,
@@ -348,24 +352,24 @@ function momentumScore(
   if (!recentSpins.length) {
     return { score: basePercentage, recentHits: 0, recentPercentage: 0, momentumDelta: 0 };
   }
-  // Exponential recency weighting: newest spin weight = 1.0, decaying by 0.92 per step
-  const decay = 0.92;
+  // Use only the last MOMENTUM_WINDOW spins for responsiveness
+  const window = recentSpins.slice(0, MOMENTUM_WINDOW);
   let weightedHits = 0;
   let totalWeight = 0;
   let rawHits = 0;
-  for (let i = 0; i < recentSpins.length; i++) {
-    const w = Math.pow(decay, i);
+  for (let i = 0; i < window.length; i++) {
+    const w = Math.pow(MOMENTUM_DECAY, i);
     totalWeight += w;
-    if (recentSpins[i].wheelResultSector === sector) {
+    if (window[i].wheelResultSector === sector) {
       weightedHits += w;
       rawHits++;
     }
   }
-  const recentPercentage = (rawHits / recentSpins.length) * 100;
+  const recentPercentage = (rawHits / window.length) * 100;
   const momentumDelta = recentPercentage - basePercentage;
-  // Score = blend of recent momentum (70%) and a small base floor (30%)
+  // Score = weighted recent (75%) + base floor (25%)
   const weightedPct = (weightedHits / totalWeight) * 100;
-  const score = weightedPct * 0.7 + basePercentage * 0.3;
+  const score = weightedPct * 0.75 + basePercentage * 0.25;
   return { score, recentHits: rawHits, recentPercentage, momentumDelta };
 }
 
@@ -520,6 +524,10 @@ export function buildNextSpinSignal(
 }
 
 // Build all 3 real-data predictions at once.
+// The 3 strategies pick 3 DIFFERENT sectors to maximize coverage:
+//   1. MOMENTUM       — highest recent hit rate (what's hot right now)
+//   2. BIGGEST RISER  — highest momentum delta (sector improving most vs baseline)
+//   3. SMART COVERAGE — highest combined score NOT already picked by 1 or 2
 export function buildMultiPrediction(
   stats: NormalizedStats,
   recentSpins: NormalizedSpin[] = [],
@@ -528,10 +536,10 @@ export function buildMultiPrediction(
   const spins = recentSpins;
   const matchedStat = stats.topSlotMatchedStats.find((s) => s.matched);
   const topSlotMatchedPercentage = matchedStat?.percentage ?? null;
-  const recentWindow = Math.min(15, spins.length);
+  const recentWindow = Math.min(MOMENTUM_WINDOW, spins.length);
 
-  // ===== Strategy 1: MOMENTUM =====
-  const momentumRanked = stats.aggStats
+  // Compute momentum data for ALL sectors upfront (used by all 3 strategies)
+  const allMomentum = stats.aggStats
     .map((s) => {
       const m = momentumScore(s.wheelResult, spins, s.percentage);
       return {
@@ -547,8 +555,10 @@ export function buildMultiPrediction(
         recentPercentage: m.recentPercentage,
         momentumDelta: m.momentumDelta,
       };
-    })
-    .sort((a, b) => b.score - a.score);
+    });
+
+  // ===== Strategy 1: MOMENTUM (highest recent hit rate) =====
+  const momentumRanked = [...allMomentum].sort((a, b) => b.score - a.score);
   const momentumTop = momentumRanked[0];
   const momentumSecond = momentumRanked[1];
   const momentumMax = Math.max(1, ...momentumRanked.map((r) => r.score));
@@ -578,7 +588,7 @@ export function buildMultiPrediction(
             ? [
                 {
                   label: "Heating up",
-                  detail: `+${momentumTop.momentumDelta.toFixed(2)}% above 24h baseline (sector is running hot right now)`,
+                  detail: `+${momentumTop.momentumDelta.toFixed(2)}% above 24h baseline`,
                   weight: Math.round((momentumTop.momentumDelta / 30) * 50) / 100,
                 },
               ]
@@ -597,105 +607,110 @@ export function buildMultiPrediction(
       )
     : emptySignal("momentum", "Next Spin (Live Momentum)", sessionTotal);
 
-  // ===== Strategy 2: HOT TREND =====
-  const hotRanked = stats.aggStats
-    .map((s) => {
-      const score = hotTrendScore(s.hotFrequencyPercentage, s.percentage);
-      return {
-        sector: s.wheelResult,
-        sectorLabel: label(s.wheelResult),
-        score,
-        percentage: s.percentage,
-        hotFrequencyPercentage: s.hotFrequencyPercentage,
-        lastSeenBefore: s.lastSeenBefore,
-        isBonus: BONUS_SET.has(s.wheelResult),
-        count: s.count,
-      };
-    })
-    .sort((a, b) => b.score - a.score);
-  const hotTop = hotRanked[0];
-  const hotSecond = hotRanked[1];
-  const hotMax = Math.max(1, ...hotRanked.map((r) => r.score));
-  const hotAcc = backtestStrategy(stats, spins, "hot_trend");
-  const hotHitRate = hotTop ? hotTop.percentage : 0;
-  const hotTrendSignal = hotTop
+  // ===== Strategy 2: BIGGEST RISER (highest momentum delta — sector improving most) =====
+  // This catches sectors that are suddenly hitting MORE than usual. It picks a
+  // DIFFERENT sector from Strategy 1 (excludes the momentum top pick) so the 3
+  // signals cover different ground.
+  const riserRanked = allMomentum
+    .filter((r) => r.sector !== momentumTop?.sector) // exclude Strategy 1's pick
+    .sort((a, b) => b.momentumDelta - a.momentumDelta);
+  const riserTop = riserRanked[0];
+  const riserSecond = riserRanked[1];
+  const riserMax = Math.max(1, ...riserRanked.map((r) => Math.abs(r.momentumDelta)));
+  const riserAcc = backtestStrategy(stats, spins, "hot_trend");
+  const riserHitRate = riserTop ? riserTop.recentPercentage : 0;
+  const hotTrendSignal = riserTop
     ? buildSignalCommon(
         stats,
-        hotTop.sector,
+        riserTop.sector,
         "hot_trend",
-        "Hot Trend (24h Streak)",
-        hotHitRate,
+        "Biggest Riser (Trending Up)",
+        riserHitRate,
         sessionTotal,
-        {},
+        {
+          recentHits: riserTop.recentHits,
+          recentWindow,
+          recentPercentage: Math.round(riserTop.recentPercentage * 10) / 10,
+          momentumDelta: Math.round(riserTop.momentumDelta * 100) / 100,
+        },
         [
           {
-            label: "24h hot frequency",
-            detail: `${hotTop.hotFrequencyPercentage != null ? (hotTop.hotFrequencyPercentage >= 0 ? "+" : "") + hotTop.hotFrequencyPercentage.toFixed(2) + "%" : "—"} vs long-term average — the strongest sustained streak`,
-            weight: Math.round(Math.abs(hotTop.hotFrequencyPercentage ?? 0) * 0.7 * 100) / 100,
+            label: "Biggest momentum gain",
+            detail: `${riserTop.momentumDelta >= 0 ? "+" : ""}${riserTop.momentumDelta.toFixed(2)}% vs 24h baseline — this sector is improving the fastest right now`,
+            weight: Math.round(Math.abs(riserTop.momentumDelta / 30) * 70) / 100,
+          },
+          {
+            label: "Recent hits",
+            detail: `${riserTop.recentHits} hit${riserTop.recentHits === 1 ? "" : "s"} in last ${recentWindow} spins (${riserTop.recentPercentage.toFixed(1)}%) vs ${riserTop.percentage.toFixed(1)}% baseline`,
+            weight: Math.round((riserTop.recentPercentage / 100) * 30) / 100,
           },
         ],
-        hotAcc,
-        hotTop.score,
-        hotSecond?.score ?? 0,
-        hotMax
+        riserAcc,
+        Math.abs(riserTop.momentumDelta),
+        Math.abs(riserSecond?.momentumDelta ?? 0),
+        riserMax
       )
-    : emptySignal("hot_trend", "Hot Trend (24h Streak)", sessionTotal);
+    : emptySignal("hot_trend", "Biggest Riser (Trending Up)", sessionTotal);
 
-  // ===== Strategy 3: OVERDUE BONUS =====
-  const bonusRanked = stats.aggStats
-    .filter((s) => BONUS_SET.has(s.wheelResult))
-    .map((s) => {
-      const score = overdueBonusScore(s.lastSeenBefore, s.percentage);
-      return {
-        sector: s.wheelResult,
-        sectorLabel: label(s.wheelResult),
-        score,
-        percentage: s.percentage,
-        hotFrequencyPercentage: s.hotFrequencyPercentage,
-        lastSeenBefore: s.lastSeenBefore,
-        isBonus: true,
-        count: s.count,
-      };
-    })
+  // ===== Strategy 3: SMART COVERAGE (best score NOT already picked) =====
+  // Uses the full momentum score but excludes sectors already picked by
+  // Strategy 1 and 2. This ensures all 3 signals cover 3 DIFFERENT sectors,
+  // maximizing the chance that at least one prediction hits.
+  const pickedSectors = new Set<string>([
+    momentumTop?.sector,
+    riserTop?.sector,
+  ].filter(Boolean) as string[]);
+  const coverageRanked = allMomentum
+    .filter((r) => !pickedSectors.has(r.sector))
     .sort((a, b) => b.score - a.score);
-  const bonusTop = bonusRanked[0];
-  const bonusSecond = bonusRanked[1];
-  const bonusMax = Math.max(1, ...bonusRanked.map((r) => r.score));
-  const bonusAcc = backtestStrategy(stats, spins, "overdue_bonus");
-  const bonusHitRate = bonusTop ? bonusTop.percentage : 0;
-  const overdueBonusSignal = bonusTop
+  const coverageTop = coverageRanked[0];
+  const coverageSecond = coverageRanked[1];
+  const coverageMax = Math.max(1, ...coverageRanked.map((r) => r.score));
+  const coverageAcc = backtestStrategy(stats, spins, "overdue_bonus");
+  const coverageHitRate = coverageTop ? coverageTop.recentPercentage : 0;
+  const overdueBonusSignal = coverageTop
     ? buildSignalCommon(
         stats,
-        bonusTop.sector,
+        coverageTop.sector,
         "overdue_bonus",
-        "Overdue Bonus Round",
-        bonusHitRate,
+        "Smart Coverage (Best of Rest)",
+        coverageHitRate,
         sessionTotal,
-        {},
+        {
+          recentHits: coverageTop.recentHits,
+          recentWindow,
+          recentPercentage: Math.round(coverageTop.recentPercentage * 10) / 10,
+          momentumDelta: Math.round(coverageTop.momentumDelta * 100) / 100,
+        },
         [
           {
-            label: "Overdue signal (bonus)",
-            detail: `Last ${label(bonusTop.sector)} bonus was ${bonusTop.lastSeenBefore ?? 0} spin${(bonusTop.lastSeenBefore ?? 0) === 1 ? "" : "s"} ago — the longest gap among bonus rounds`,
-            weight: Math.round(Math.log1p(bonusTop.lastSeenBefore ?? 0) * 8 * 0.75 * 100) / 100,
+            label: "Coverage pick",
+            detail: `Highest momentum score among sectors not already predicted — covers a different sector to maximize hit chance`,
+            weight: Math.round((coverageTop.score / 100) * 50) / 100,
           },
-          ...(topSlotMatchedPercentage != null
+          {
+            label: "Recent hits",
+            detail: `${coverageTop.recentHits} hit${coverageTop.recentHits === 1 ? "" : "s"} in last ${recentWindow} spins (${coverageTop.recentPercentage.toFixed(1)}%)`,
+            weight: Math.round((coverageTop.recentPercentage / 100) * 30) / 100,
+          },
+          ...(coverageTop.isBonus
             ? [
                 {
-                  label: "Top slot match rate",
-                  detail: `${topSlotMatchedPercentage.toFixed(2)}% of recent spins had a top-slot match (which is what triggers bonus rounds)`,
-                  weight: Math.round(Math.min(15, Math.max(0, (topSlotMatchedPercentage - 10) * 1.5)) * 100) / 100,
+                  label: "Bonus round",
+                  detail: `This is a bonus sector — rare but high payout if it hits`,
+                  weight: 0,
                 },
               ]
             : []),
         ],
-        bonusAcc,
-        bonusTop.score,
-        bonusSecond?.score ?? 0,
-        bonusMax
+        coverageAcc,
+        coverageTop.score,
+        coverageSecond?.score ?? 0,
+        coverageMax
       )
-    : emptySignal("overdue_bonus", "Overdue Bonus Round", sessionTotal);
+    : emptySignal("overdue_bonus", "Smart Coverage (Best of Rest)", sessionTotal);
 
-  // Combined ranked list (by momentum score, the primary signal) for the UI alternatives panel
+  // Combined ranked list (by momentum score) for the UI alternatives panel
   const ranked = momentumRanked.slice(0, 8).map((r) => ({
     sector: r.sector,
     sectorLabel: r.sectorLabel,
@@ -757,13 +772,20 @@ function backtestStrategy(
       })
       .sort((a, b) => b.score - a.score);
   } else if (strategy === "hot_trend") {
+    // Biggest riser: highest momentum delta
     ranked = stats.aggStats
-      .map((s) => ({ sector: s.wheelResult, score: hotTrendScore(s.hotFrequencyPercentage, s.percentage) }))
+      .map((s) => {
+        const m = momentumScore(s.wheelResult, recentSpins, s.percentage);
+        return { sector: s.wheelResult, score: m.momentumDelta };
+      })
       .sort((a, b) => b.score - a.score);
   } else {
+    // Smart coverage: same as momentum (it uses momentum score with exclusions)
     ranked = stats.aggStats
-      .filter((s) => BONUS_SET.has(s.wheelResult))
-      .map((s) => ({ sector: s.wheelResult, score: overdueBonusScore(s.lastSeenBefore, s.percentage) }))
+      .map((s) => {
+        const m = momentumScore(s.wheelResult, recentSpins, s.percentage);
+        return { sector: s.wheelResult, score: m.score };
+      })
       .sort((a, b) => b.score - a.score);
   }
   const top3 = new Set(ranked.slice(0, 3).map((r) => r.sector));
@@ -776,17 +798,6 @@ function backtestStrategy(
     }
   }
   if (total === 0) return null;
-  // For the overdue_bonus strategy, only count bonus spins (since non-bonus
-  // spins can never "hit" a bonus prediction). This gives a fair accuracy.
-  if (strategy === "overdue_bonus") {
-    const bonusSpins = recentSpins.filter((s) => s.wheelResultSector && BONUS_SET.has(s.wheelResultSector));
-    if (bonusSpins.length === 0) return null;
-    let bHits = 0;
-    for (const s of bonusSpins) {
-      if (top3.has(s.wheelResultSector as string)) bHits++;
-    }
-    return Math.round((bHits / bonusSpins.length) * 1000) / 10;
-  }
   return Math.round((hits / total) * 1000) / 10;
 }
 

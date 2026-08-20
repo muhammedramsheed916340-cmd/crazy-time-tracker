@@ -90,6 +90,7 @@ export default function Home() {
             signals={predict.signals}
             ranked={predict.ranked}
             accuracy={predict.accuracy}
+            lastActualSpin={predict.lastActualSpin}
             recentSpinsCount={predict.recentSpinsCount}
             totalSpins={predict.totalSpins}
             loading={predict.loading}

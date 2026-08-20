@@ -71,6 +71,9 @@ export async function GET(req: NextRequest) {
     // Fetch the real historical accuracy stats to send to the client
     const accuracy = await getAccuracyStats();
 
+    // The actual most recent real spin, so the UI can show it next to predictions
+    const lastActualSpin = spins[0] ?? null;
+
     return NextResponse.json(
       {
         signals: {
@@ -81,6 +84,16 @@ export async function GET(req: NextRequest) {
         ranked: multi.ranked,
         predictionSummary,
         accuracy,
+        lastActualSpin: lastActualSpin
+          ? {
+              sector: lastActualSpin.wheelResultSector,
+              sectorLabel: lastActualSpin.sectorLabel ?? lastActualSpin.wheelResultSector,
+              settledAt: lastActualSpin.settledAt,
+              topSlotSector: lastActualSpin.topSlotSector,
+              maxMultiplier: lastActualSpin.maxMultiplier,
+              isBonus: lastActualSpin.bonusType != null,
+            }
+          : null,
         recentSpinsCount: spins.length,
         totalSpins: eventsRes.totalCount,
         fetchedAt: new Date().toISOString(),

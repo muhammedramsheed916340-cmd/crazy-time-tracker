@@ -65,6 +65,14 @@ export interface PredictResponse {
   }[];
   predictionSummary?: NormalizedPrediction;
   accuracy?: AccuracyStats | null;
+  lastActualSpin?: {
+    sector: string | null;
+    sectorLabel: string | null;
+    settledAt: string | null;
+    topSlotSector: string | null;
+    maxMultiplier: number | null;
+    isBonus: boolean;
+  } | null;
   recentSpinsCount: number;
   totalSpins: number;
   fetchedAt: string;
@@ -266,6 +274,7 @@ export function useCrazyTimePredict() {
     signals: data?.signals ?? null,
     ranked: data?.ranked ?? [],
     accuracy: data?.accuracy ?? null,
+    lastActualSpin: data?.lastActualSpin ?? null,
     recentSpinsCount: data?.recentSpinsCount ?? 0,
     totalSpins: data?.totalSpins ?? 0,
     predictionSummary: data?.predictionSummary ?? null,
