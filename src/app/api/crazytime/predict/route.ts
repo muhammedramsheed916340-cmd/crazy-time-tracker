@@ -211,22 +211,22 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    // Sort by total score (highest first) and pick top-3
+    // Sort by total score (highest first)
     dynamicScores.sort((a, b) => b.totalScore - a.totalScore);
 
-    // ===== SELECT TOP-3 WITH DIVERSIFICATION =====
-    // Pick the top candidate (always the highest score).
-    // For #2 and #3, ensure diversity: don't pick 3 sectors all from the same
-    // "type" (all numbers, or all bonuses). Also add a rotation factor so the
-    // predictions change between calls even if the last spin hasn't changed
-    // (matching the reference Revo Fixer which rotates every 60s).
+    // ===== SELECT TOP-3 — STRICT UNIQUENESS GUARANTEED =====
+    // The three prediction boxes MUST always contain three UNIQUE sectors.
+    // Signal 1 = highest score
+    // Signal 2 = highest score ≠ Signal 1
+    // Signal 3 = highest score ≠ Signal 1 AND ≠ Signal 2
+    // Then apply diversity: if all 3 are numbers, swap #3 for best bonus.
     const sortedSectors = dynamicScores.map(s => s.sector);
     const top3Sectors: string[] = [];
 
-    // Signal 1: always the highest-scoring sector
-    top3Sectors.push(sortedSectors[0]);
+    // Signal 1: highest-scoring sector
+    if (sortedSectors[0]) top3Sectors.push(sortedSectors[0]);
 
-    // Signal 2: highest-scoring sector NOT already picked
+    // Signal 2: highest-scoring sector NOT in top3Sectors
     for (const s of sortedSectors) {
       if (!top3Sectors.includes(s)) {
         top3Sectors.push(s);
@@ -234,16 +234,13 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Signal 3: pick from the remaining candidates, prioritizing diversity.
-    // Prefer a sector from a different category (number vs bonus) than the
-    // first two picks. If both picks so far are numbers, prefer a bonus
-    // that has a decent score. If both are bonuses, prefer a number.
+    // Signal 3: try diversity first (bonus if both picks are numbers),
+    // but fall back to next-best unique sector if no bonus available
     const pickedAreAllNumbers = top3Sectors.every(s => !BONUS_SET.has(s));
-    const pickedAreAllBonuses = top3Sectors.every(s => BONUS_SET.has(s));
-
     let thirdPick: string | null = null;
+
     if (pickedAreAllNumbers) {
-      // Both picks are numbers — prefer a bonus for diversity
+      // Prefer a bonus for diversity
       for (const s of sortedSectors) {
         if (!top3Sectors.includes(s) && BONUS_SET.has(s)) {
           thirdPick = s;
@@ -251,8 +248,8 @@ export async function GET(req: NextRequest) {
         }
       }
     }
+    // Fallback: next best unique sector (regardless of category)
     if (!thirdPick) {
-      // No diversity pick or both are bonuses — just take the next best
       for (const s of sortedSectors) {
         if (!top3Sectors.includes(s)) {
           thirdPick = s;
@@ -261,6 +258,20 @@ export async function GET(req: NextRequest) {
       }
     }
     if (thirdPick) top3Sectors.push(thirdPick);
+
+    // FINAL GUARANTEE: remove any duplicates (shouldn't happen, but just in case)
+    const uniqueTop3 = [...new Set(top3Sectors)];
+    // If we lost one due to dedup, fill from remaining sorted sectors
+    while (uniqueTop3.length < 3 && uniqueTop3.length < sortedSectors.length) {
+      const next = sortedSectors.find(s => !uniqueTop3.includes(s));
+      if (next) uniqueTop3.push(next);
+      else break;
+    }
+    // Replace top3Sectors with the guaranteed-unique version
+    top3Sectors.length = 0;
+    top3Sectors.push(...uniqueTop3);
+
+    console.log(`[predict] Top-3 selected: ${top3Sectors.map(s => label(s)).join(", ")} (unique: ${new Set(top3Sectors).size === top3Sectors.length})`);
 
     // Keep for evidence display
     const candidates = scoreCandidates(analysis, adaptiveWeights, lastSpinResult);
@@ -372,13 +383,13 @@ export async function GET(req: NextRequest) {
         hotTrend: signals[1] ?? null,
         overdueBonus: signals[2] ?? null,
       },
-      ranked: candidates.slice(0, 8).map((c) => ({
+      ranked: dynamicScores.slice(0, 8).map((c) => ({
         sector: c.sector,
         sectorLabel: label(c.sector),
         score: c.totalScore,
-        percentage: analysis.long.sectorStats[c.sector]?.frequency ?? 0,
-        hotFrequencyPercentage: stats.aggStats.find((s) => s.wheelResult === c.sector)?.hotFrequencyPercentage ?? null,
-        lastSeenBefore: analysis.recent.sectorStats[c.sector]?.recency ?? null,
+        percentage: c.baseFreq,
+        hotFrequencyPercentage: c.hotFreq,
+        lastSeenBefore: c.recency,
         isBonus: c.isBonus,
       })),
       predictionSummary: null,
