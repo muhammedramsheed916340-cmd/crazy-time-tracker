@@ -1,5 +1,6 @@
 "use client";
 
+import { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -32,8 +33,11 @@ const STRATEGY_COLOR: Record<string, string> = {
 export function AccuracyTracker({ accuracy: serverAccuracy, loading, error }: Props) {
   // Use the CLIENT-SIDE tracker (localStorage) — this works on Vercel
   // without needing a persistent server-side database.
+  // Use mounted state to avoid hydration mismatch (localStorage only on client)
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const clientTracker = useClientPredictionTracker();
-  const accuracy = clientTracker.accuracy;
+  const accuracy = mounted ? clientTracker.accuracy : null;
   return (
     <Card className="bg-[#141827] border-[#1e2240] text-white h-full flex flex-col">
       <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">

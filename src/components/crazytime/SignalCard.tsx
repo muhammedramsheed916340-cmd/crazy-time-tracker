@@ -97,6 +97,9 @@ export function SignalCard({
   const spinCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Client-side prediction tracker (localStorage-based, works on Vercel)
+  // Use mounted state to avoid hydration mismatch
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
   const clientTracker = useClientPredictionTracker();
 
   const runPredict = useCallback(async () => {
@@ -113,17 +116,12 @@ export function SignalCard({
   // (localStorage). This runs whenever `signals` or `lastActualSpin` changes.
   const prevPredictionKey = useRef<string>("");
   useEffect(() => {
+    if (!mounted) return;
     if (signals && lastActualSpin?.sector) {
-      // Use the lastActualSpin as the source spin for recording
-      // We need the spin ID — get it from the API response's lastActualSpin
-      // The predict API returns lastActualSpin with sector/settledAt but not id
-      // So we use the settledAt timestamp as a unique identifier
       const sourceKey = lastActualSpin.settledAt ?? "";
       if (sourceKey && sourceKey !== prevPredictionKey.current) {
         prevPredictionKey.current = sourceKey;
-        // We need to find the actual spin ID from the events hook
-        // For now, use the settledAt timestamp as a fallback ID
-        const sourceSpinId = sourceKey; // timestamp-based fallback
+        const sourceSpinId = sourceKey;
         clientTracker.recordSignals(
           signals,
           sourceSpinId,
@@ -131,7 +129,7 @@ export function SignalCard({
         );
       }
     }
-  }, [signals, lastActualSpin, clientTracker]);
+  }, [signals, lastActualSpin, clientTracker, mounted]);
 
   // Countdown timer (60s auto-refresh)
   useEffect(() => {
