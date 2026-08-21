@@ -134,54 +134,103 @@ export async function GET(req: NextRequest) {
     const validatedWinRate = accuracy && accuracy.verified > 0 ? accuracy.winRate : null;
     const adaptiveWeights = computeAdaptiveWeightsFromWalkForward(validatedSpins);
 
-    // ===== 8. OPTIMIZED TOP-3 SELECTION =====
-    // Walk-forward backtesting showed that the simple "always pick the 3 most
-    // frequent sectors" strategy (75.5% top-3 hit rate) significantly outperforms
-    // the complex scoring engine (64.6%). The reason: the 3 most frequent
-    // sectors (1, 2, 5) cover ~75% of all outcomes, and trying to be "smart"
-    // by swapping in bonus sectors actually REDUCES coverage.
+    // ===== 8. DYNAMIC TOP-3 SELECTION =====
+    // The engine dynamically calculates the top-3 candidates using a blend of:
+    //   - Recent-100 frequency (40% weight — stable base, walk-forward validated)
+    //   - Markov transition probability (25% — what comes after the last spin)
+    //   - Recent momentum (20% — is this sector heating up?)
+    //   - Recency bonus (15% — did it just appear?)
     //
-    // We use a hybrid: pick the top-3 by recent-100 frequency (which is almost
-    // always 1, 2, 5, but adapts if the wheel's behavior shifts). This gives
-    // the stability of the base-frequency approach while still being data-driven.
+    // This ensures the predictions CHANGE when the live data changes.
+    // If Coin Flip is suddenly hitting more often, or if the Markov transition
+    // after the last spin strongly favors a bonus, it will appear in the top-3.
     const lastSpinResult = latestSpin?.result ?? null;
 
-    // Compute recent-100 frequency for each sector
+    // Compute recent-100 frequency
     const recent100 = validatedSpins.slice(-100);
     const freq100: Record<string, number> = {};
     for (const s of recent100) {
       freq100[s.result] = (freq100[s.result] ?? 0) + 1;
     }
 
-    // Sort all sectors by recent-100 frequency (highest first)
-    const rankedByFreq = [...ALL_SECTORS]
-      .map(sector => ({
+    // Compute Markov transitions from the last spin
+    const lastResult = latestSpin?.result ?? null;
+    const transMap: Record<string, number> = {};
+    if (lastResult) {
+      for (let i = 0; i < validatedSpins.length - 1; i++) {
+        if (validatedSpins[i].result === lastResult) {
+          transMap[validatedSpins[i + 1].result] = (transMap[validatedSpins[i + 1].result] ?? 0) + 1;
+        }
+      }
+    }
+    let transTotal = 0;
+    for (const c of Object.values(transMap)) transTotal += c;
+
+    // Score every sector dynamically
+    const dynamicScores = ALL_SECTORS.map(sector => {
+      const recentStat = analysis.recent.sectorStats[sector];
+      const longStat = analysis.long.sectorStats[sector];
+      const stat = stats.aggStats.find(s => s.wheelResult === sector);
+
+      // Signal 1: Recent-100 frequency (0-100)
+      const freqPct = ((freq100[sector] ?? 0) / Math.max(1, recent100.length)) * 100;
+
+      // Signal 2: Markov transition probability (0-100)
+      const transPct = transTotal > 0 ? ((transMap[sector] ?? 0) / transTotal) * 100 : 0;
+
+      // Signal 3: Momentum delta (recent% - long%)
+      const momentum = recentStat?.momentumDelta ?? 0;
+      // Normalize to 0-100: 50 + delta (clamped)
+      const momentumScore = Math.max(0, Math.min(100, 50 + momentum * 2));
+
+      // Signal 4: Recency bonus (0-100) — lower gap = higher score
+      const recencyScore = recentStat
+        ? Math.max(0, 100 - (recentStat.recency / Math.max(1, analysis.recent.totalSpins)) * 100)
+        : 0;
+
+      // Combined score: weighted blend
+      const totalScore =
+        freqPct * 0.40 +
+        transPct * 0.25 +
+        momentumScore * 0.20 +
+        recencyScore * 0.15;
+
+      return {
         sector,
-        freq: freq100[sector] ?? 0,
-        pct: ((freq100[sector] ?? 0) / Math.max(1, recent100.length)) * 100,
-      }))
-      .sort((a, b) => b.freq - a.freq);
+        sectorLabel: label(sector),
+        freqPct,
+        transPct,
+        momentum,
+        recencyScore,
+        totalScore,
+        isBonus: BONUS_SET.has(sector),
+        baseFreq: stat?.percentage ?? 0,
+        count: stat?.count ?? 0,
+        hotFreq: stat?.hotFrequencyPercentage ?? null,
+        recency: recentStat?.recency ?? null,
+      };
+    });
 
-    // Top-3 by recent-100 frequency (the walk-forward validated best strategy)
-    const top3Sectors = rankedByFreq.slice(0, 3).map(r => r.sector);
+    // Sort by total score (highest first) and pick top-3
+    dynamicScores.sort((a, b) => b.totalScore - a.totalScore);
+    const top3Sectors = dynamicScores.slice(0, 3).map(s => s.sector);
 
-    // Also compute the full scoring candidates for the evidence display
+    // Keep for evidence display
     const candidates = scoreCandidates(analysis, adaptiveWeights, lastSpinResult);
 
     // ===== 9. GENERATE 3 SIGNALS =====
     const signals = top3Sectors.map((sector, idx) => {
-      const freqInfo = rankedByFreq.find(r => r.sector === sector)!;
+      const ds = dynamicScores.find(s => s.sector === sector)!;
       const stat = stats.aggStats.find(s => s.wheelResult === sector);
       const recentStat = analysis.recent.sectorStats[sector];
       const longStat = analysis.long.sectorStats[sector];
       const isBonus = BONUS_SET.has(sector);
 
-      // Confidence based on the sector's actual frequency (honest, not inflated)
+      // Confidence based on the sector's dynamic score (honest, not inflated)
       const baseFreq = stat?.percentage ?? 0;
-      const recentFreq = freqInfo.pct;
-      // Confidence = blend of base + recent frequency, scaled to 30-85 range
-      let confidence = Math.round(30 + Math.min(55, (baseFreq * 0.5 + recentFreq * 0.5) * 1.2));
-      if (isBonus) confidence = Math.min(confidence, 60); // bonuses are rare
+      const recentFreq = ds.freqPct;
+      let confidence = Math.round(30 + Math.min(55, (baseFreq * 0.4 + recentFreq * 0.4 + ds.transPct * 0.2) * 1.3));
+      if (isBonus) confidence = Math.min(confidence, 65);
       confidence = Math.max(30, Math.min(85, confidence));
 
       return {
@@ -189,33 +238,33 @@ export async function GET(req: NextRequest) {
         sectorLabel: label(sector),
         cardImage: cardImage(sector),
         confidence,
-        modelScore: Math.round(freqInfo.pct * 100) / 100,
+        modelScore: Math.round(ds.totalScore * 100) / 100,
         signals: [
           {
-            label: `Recent-100 frequency (walk-forward validated)`,
-            detail: `${freqInfo.freq} hits in last 100 spins (${freqInfo.pct.toFixed(1)}%) — this is the most reliable predictor per walk-forward backtesting`,
-            weight: 0.5,
+            label: `Recent-100 frequency (40% weight)`,
+            detail: `${ds.freqPct.toFixed(1)}% (${freq100[sector] ?? 0} hits in last 100 spins) — the most reliable base signal`,
+            weight: 0.40,
           },
           {
-            label: `24h base frequency`,
-            detail: `${baseFreq.toFixed(1)}% (${stat?.count ?? 0} hits in last ${stats.totalCount} spins)`,
-            weight: 0.3,
+            label: `Markov transition after ${label(lastResult)} (25% weight)`,
+            detail: `${ds.transPct.toFixed(1)}% probability — historically comes after "${label(lastResult)}" (${transMap[sector] ?? 0} out of ${transTotal} transitions)`,
+            weight: 0.25,
           },
-          ...(recentStat ? [{
-            label: `Recency`,
-            detail: `Last appeared ${recentStat.recency} spins ago — ${recentStat.recency === 0 ? 'just happened' : recentStat.recency < 5 ? 'very recent' : 'a while ago'}`,
-            weight: 0.1,
-          }] : []),
-          ...(longStat?.hotFrequencyPercentage != null ? [{
-            label: `24h hot trend`,
-            detail: `${longStat.hotFrequencyPercentage >= 0 ? '+' : ''}${longStat.hotFrequencyPercentage.toFixed(2)}% vs long-term average`,
-            weight: 0.1,
-          }] : []),
+          {
+            label: `Momentum (20% weight)`,
+            detail: `${ds.momentum >= 0 ? '+' : ''}${ds.momentum.toFixed(2)}% vs long-term — ${ds.momentum > 0 ? 'heating up' : ds.momentum < -5 ? 'cooling down' : 'stable'}`,
+            weight: 0.20,
+          },
+          {
+            label: `Recency (15% weight)`,
+            detail: `Last appeared ${ds.recency ?? '?'} spins ago — score ${ds.recencyScore.toFixed(1)}`,
+            weight: 0.15,
+          },
         ],
         isBonus,
         observedPercentage: baseFreq,
         observedCount: stat?.count ?? 0,
-        observedLastSeenBefore: recentStat?.recency ?? null,
+        observedLastSeenBefore: ds.recency,
         observedHotFrequencyPercentage: stat?.hotFrequencyPercentage ?? null,
         generatedAt: new Date().toISOString(),
         sessionTotal: 0,
@@ -223,10 +272,10 @@ export async function GET(req: NextRequest) {
         strategy: idx === 0 ? "momentum" : idx === 1 ? "hot_trend" : "overdue_bonus",
         strategyTitle: idx === 0 ? "Signal #1 (Top Pick)" : idx === 1 ? "Signal #2 (2nd Pick)" : "Signal #3 (3rd Pick)",
         observed: {
-          recentHits: freqInfo.freq,
+          recentHits: freq100[sector] ?? 0,
           recentWindow: 100,
-          recentPercentage: freqInfo.pct,
-          momentumDelta: recentStat?.momentumDelta ?? 0,
+          recentPercentage: ds.freqPct,
+          momentumDelta: ds.momentum,
         },
       };
     });
