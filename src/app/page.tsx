@@ -39,8 +39,10 @@ export default function Home() {
               <Radio className="w-4 h-4 text-[#448AFF] animate-pulse" />
             </div>
             <div className="min-w-0">
-              <h1 className="text-base sm:text-lg font-extrabold leading-tight truncate">
+              <h1 className="text-base sm:text-lg font-extrabold leading-tight truncate flex items-center gap-2">
                 <span className="text-[#448AFF]">CRAZY TIME</span> LIVE
+                <span className="text-[#ff2d55] font-black text-lg sm:text-xl" style={{ textShadow: "0 0 8px rgba(255,45,85,0.6)" }}>VILLAGE</span>
+                <span className="text-white/70 text-[10px] sm:text-xs font-medium">APNA</span>
               </h1>
               <p className="text-[10px] sm:text-[11px] text-[#8899cc] leading-tight truncate">
                 Real-time Evolution Gaming · Live spins, stats &amp; AI predictions
