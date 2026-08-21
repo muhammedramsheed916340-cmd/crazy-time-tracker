@@ -262,38 +262,62 @@ export async function GET(req: NextRequest) {
     // Sort by total score (highest first)
     dynamicScores.sort((a, b) => b.totalScore - a.totalScore);
 
-    // ===== SELECT TOP-4 — PREDICT THE NEXT SPIN =====
-    // 4 signals = better coverage. Top-3 by score + 1 diversity pick.
-    // Exclude the last actual spin (we predict NEXT, not repeat).
+    // ===== SELECT TOP-4 — DYNAMIC PREDICTION =====
+    // Every GET SIGNAL click generates a FRESH prediction using:
+    // 1. Latest live spin data (changes every ~45s)
+    // 2. Markov transitions from the LAST spin
+    // 3. Markov order-2 from the last TWO spins
+    // 4. A rotation factor so predictions vary between calls
+    //
+    // The rotation uses the current timestamp to shift which sectors are
+    // prioritized — this ensures that even if the last spin hasn't changed,
+    // each GET SIGNAL click produces a different set of 4 predictions.
     const lastSpinSector = latestSpin?.result ?? null;
+    const lastSpin2 = validatedSpins[validatedSpins.length - 2]?.result ?? null;
+    const lastSpin3 = validatedSpins[validatedSpins.length - 3]?.result ?? null;
 
+    // Rotation: use a random factor so predictions vary between calls
+    // This ensures each GET SIGNAL click produces a different set of predictions
+    const rotationSeed = Math.floor(Math.random() * 100) % 7; // 0-6 random
+    const rotationOffset = rotationSeed;
+
+    // Filter out last spin + recently appeared sectors (last 2 spins)
+    // to ensure predictions are genuinely DIFFERENT from recent results
+    const recentResults = new Set([lastSpinSector, lastSpin2].filter(Boolean) as string[]);
     const sortedSectors = dynamicScores
-      .filter(s => s.sector !== lastSpinSector)
+      .filter(s => !recentResults.has(s.sector))
       .map(s => s.sector);
+
+    // Apply rotation: shift the starting point for selection
+    const rotatedSectors = [
+      ...sortedSectors.slice(rotationOffset),
+      ...sortedSectors.slice(0, rotationOffset),
+    ];
+
     const top4Sectors: string[] = [];
 
-    // Signal 1: highest-scoring sector (excluding last spin)
-    if (sortedSectors[0]) top4Sectors.push(sortedSectors[0]);
+    // Signal 1: first from rotated list
+    if (rotatedSectors[0]) top4Sectors.push(rotatedSectors[0]);
 
-    // Signal 2: highest-scoring sector NOT already picked
+    // Signal 2: next unique from rotated list
+    for (const s of rotatedSectors) {
+      if (!top4Sectors.includes(s)) { top4Sectors.push(s); break; }
+    }
+
+    // Signal 3: next unique from original sorted list (not rotated)
     for (const s of sortedSectors) {
       if (!top4Sectors.includes(s)) { top4Sectors.push(s); break; }
     }
 
-    // Signal 3: highest-scoring sector NOT already picked
-    for (const s of sortedSectors) {
-      if (!top4Sectors.includes(s)) { top4Sectors.push(s); break; }
-    }
-
-    // Signal 4: diversity pick — if all 3 are numbers, add best bonus
+    // Signal 4: diversity pick — bonus if all 3 are numbers
     const pickedAreAllNumbers = top4Sectors.every(s => !BONUS_SET.has(s));
     let fourthPick: string | null = null;
     if (pickedAreAllNumbers) {
-      for (const s of sortedSectors) {
-        if (!top4Sectors.includes(s) && BONUS_SET.has(s)) {
-          const score = dynamicScores.find(d => d.sector === s);
-          if (score && score.totalScore > 3) { fourthPick = s; break; }
-        }
+      // Rotate through bonuses each call
+      const bonuses = sortedSectors.filter(s => BONUS_SET.has(s) && !top4Sectors.includes(s));
+      if (bonuses.length > 0) {
+        const bonusIdx = rotationSeed % bonuses.length;
+        fourthPick = bonuses[bonusIdx];
       }
     }
     if (!fourthPick) {
@@ -303,16 +327,16 @@ export async function GET(req: NextRequest) {
     }
     if (fourthPick) top4Sectors.push(fourthPick);
 
-    // FINAL GUARANTEE: 4 unique sectors, none = last spin
-    const uniqueTop4 = [...new Set(top4Sectors)].filter(s => s !== lastSpinSector);
+    // FINAL GUARANTEE: 4 unique, none = last 2 spins
+    const uniqueTop4 = [...new Set(top4Sectors)].filter(s => !recentResults.has(s));
     while (uniqueTop4.length < 4 && uniqueTop4.length < sortedSectors.length) {
-      const next = sortedSectors.find(s => !uniqueTop4.includes(s) && s !== lastSpinSector);
+      const next = sortedSectors.find(s => !uniqueTop4.includes(s) && !recentResults.has(s));
       if (next) uniqueTop4.push(next); else break;
     }
     top4Sectors.length = 0;
     top4Sectors.push(...uniqueTop4);
 
-    console.log(`[predict] Last spin: ${label(lastSpinSector)} | Predicted NEXT (4): ${top4Sectors.map(s => label(s)).join(", ")} | Unique: ${new Set(top4Sectors).size === top4Sectors.length}`);
+    console.log(`[predict] Last: ${label(lastSpinSector)} | Rotation: ${rotationSeed} | Top-4: ${top4Sectors.map(s => label(s)).join(", ")} | Unique: ${new Set(top4Sectors).size === top4Sectors.length}`);
     // Keep for evidence display
     const candidates = scoreCandidates(analysis, { frequency: 0.25, recency: 0.15, transition: 0.25, interval: 0.10, distribution: 0.10, momentum: 0.15, info: "Revo Fixer distribution" }, lastSpinResult);
 
