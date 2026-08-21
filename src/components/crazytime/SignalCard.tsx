@@ -194,7 +194,7 @@ export function SignalCard({
   }, [autoOn, runPredict]);
 
   // Stats grid
-  const verifiedTop3Rate = accuracy && accuracy.resolved > 0 ? accuracy.top3HitRate : null;
+  const verifiedTop3Rate = accuracy && accuracy.verified > 0 ? accuracy.top3Rate : null;
   const momAcc = signals?.momentum?.modelAccuracy;
   const hotAcc = signals?.hotTrend?.modelAccuracy;
   const bonusAcc = signals?.overdueBonus?.modelAccuracy;
@@ -206,7 +206,7 @@ export function SignalCard({
   const displayAccuracy = verifiedTop3Rate != null ? verifiedTop3Rate : avgBacktest;
   const statTotal = totalSpins;
   const statAccuracy = displayAccuracy != null ? `${displayAccuracy.toFixed(1)}%` : "—";
-  const statVerified = accuracy?.resolved ?? 0;
+  const statVerified = accuracy?.verified ?? 0;
 
   const signalsList: { key: StrategyKey; signal: NextSpinSignal | null }[] = [
     { key: "momentum", signal: signals?.momentum ?? null },

@@ -79,7 +79,7 @@ export async function GET(req: NextRequest) {
     }
 
     // ===== 4. GET ACCURACY FROM DB (with timeout protection) =====
-    let accuracy = null;
+    let accuracy: any = null;
     try {
       accuracy = await getAccuracyFromDB();
     } catch (err) {

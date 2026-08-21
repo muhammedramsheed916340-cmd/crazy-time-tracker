@@ -48,10 +48,10 @@ function resolveUrl(maybeUrl: string, base: string): string {
 }
 
 function toProxy(absoluteUrl: string): string {
-  // Keep the absolute upstream URL in a query param so the browser fetches
-  // it through our proxy. We URL-encode it to avoid query parsing issues.
-  const here = new URL("/api/crazytime/stream", "http://localhost");
-  return `${here.pathname}?u=${encodeURIComponent(absoluteUrl)}`;
+  // Use a relative path so it works on any host (localhost, Vercel, etc.)
+  // We don't need an absolute URL — just the path + query.
+  const u = new URL(absoluteUrl);
+  return `/api/crazytime/stream?u=${encodeURIComponent(u.toString())}`;
 }
 
 async function fetchUpstream(target: string, range?: string | null) {

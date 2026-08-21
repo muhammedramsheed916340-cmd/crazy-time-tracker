@@ -7,7 +7,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState, SectionError } from "@/components/crazytime/EmptyState";
 import { relativeTime, label } from "@/lib/crazytime/adapter";
 import type { AccuracyStats } from "@/hooks/use-crazy-time";
-import { CheckCircle2, XCircle, Clock3, Target, Trophy, BarChart3 } from "lucide-react";
+import { CheckCircle2, XCircle, Clock3, Target, Trophy, BarChart3, Flame } from "lucide-react";
 
 interface Props {
   accuracy: AccuracyStats | null | undefined;
@@ -16,9 +16,9 @@ interface Props {
 }
 
 const STRATEGY_LABEL: Record<string, string> = {
-  momentum: "Momentum",
-  hot_trend: "Hot Trend",
-  overdue_bonus: "Overdue Bonus",
+  momentum: "Signal #1",
+  hot_trend: "Signal #2",
+  overdue_bonus: "Signal #3",
 };
 
 const STRATEGY_COLOR: Record<string, string> = {
@@ -35,10 +35,10 @@ export function AccuracyTracker({ accuracy, loading, error }: Props) {
           <BarChart3 className="w-4 h-4 text-[#2ed573]" />
           Prediction Accuracy Tracker
         </CardTitle>
-        {accuracy && accuracy.resolved > 0 && (
+        {accuracy && accuracy.verified > 0 && (
           <Badge className="bg-[#2ed573]/20 text-[#2ed573] border border-[#2ed573]/40 text-[10px] gap-1">
             <Trophy className="w-2.5 h-2.5" />
-            {accuracy.resolved} verified
+            {accuracy.verified} verified
           </Badge>
         )}
       </CardHeader>
@@ -51,7 +51,7 @@ export function AccuracyTracker({ accuracy, loading, error }: Props) {
             <Skeleton className="h-10 w-full bg-[#1e2240]" />
             <Skeleton className="h-10 w-full bg-[#1e2240]" />
           </div>
-        ) : !accuracy || accuracy.total === 0 ? (
+        ) : !accuracy || accuracy.totalPredictions === 0 ? (
           <EmptyState message="Click GET SIGNAL — predictions will be verified against the real next spin and tracked here." />
         ) : (
           <div className="space-y-3">
@@ -60,13 +60,13 @@ export function AccuracyTracker({ accuracy, loading, error }: Props) {
               <div className="rounded-lg bg-[#0d1020] border border-[#1e2240] px-3 py-2 text-center">
                 <div className="flex items-center justify-center gap-1 text-[10px] text-[#8899cc] mb-0.5">
                   <Target className="w-3 h-3 text-[#448AFF]" />
-                  EXACT HIT RATE
+                  WIN RATE
                 </div>
                 <div className="text-xl font-extrabold text-[#448AFF]">
-                  {accuracy.resolved > 0 ? `${accuracy.hitRate.toFixed(1)}%` : "—"}
+                  {accuracy.verified > 0 ? `${accuracy.winRate.toFixed(1)}%` : "—"}
                 </div>
                 <div className="text-[9px] text-[#5a6a99]">
-                  {accuracy.hits}/{accuracy.resolved} resolved
+                  {accuracy.wins}/{accuracy.verified} verified
                 </div>
               </div>
               <div className="rounded-lg bg-[#0d1020] border border-[#1e2240] px-3 py-2 text-center">
@@ -75,18 +75,59 @@ export function AccuracyTracker({ accuracy, loading, error }: Props) {
                   TOP-3 HIT RATE
                 </div>
                 <div className="text-xl font-extrabold text-[#2ed573]">
-                  {accuracy.resolved > 0 ? `${accuracy.top3HitRate.toFixed(1)}%` : "—"}
+                  {accuracy.verified > 0 ? `${accuracy.top3Rate.toFixed(1)}%` : "—"}
                 </div>
                 <div className="text-[9px] text-[#5a6a99]">
-                  {accuracy.top3Hits}/{accuracy.resolved} resolved
+                  {accuracy.top3Hits}/{accuracy.verified} verified
                 </div>
               </div>
             </div>
 
+            {/* Summary stats */}
+            <div className="grid grid-cols-4 gap-2 text-center">
+              <div className="rounded-md bg-[#0d1020] border border-[#1e2240] px-2 py-1.5">
+                <div className="text-[9px] text-[#8899cc]">TOTAL</div>
+                <div className="text-sm font-bold text-white">{accuracy.totalPredictions}</div>
+              </div>
+              <div className="rounded-md bg-[#0d1020] border border-[#1e2240] px-2 py-1.5">
+                <div className="text-[9px] text-[#8899cc]">PENDING</div>
+                <div className="text-sm font-bold text-[#ffa502]">{accuracy.pending}</div>
+              </div>
+              <div className="rounded-md bg-[#0d1020] border border-[#1e2240] px-2 py-1.5">
+                <div className="text-[9px] text-[#8899cc]">WINS</div>
+                <div className="text-sm font-bold text-[#2ed573]">{accuracy.wins}</div>
+              </div>
+              <div className="rounded-md bg-[#0d1020] border border-[#1e2240] px-2 py-1.5">
+                <div className="text-[9px] text-[#8899cc]">LOSSES</div>
+                <div className="text-sm font-bold text-[#ff4757]">{accuracy.losses}</div>
+              </div>
+            </div>
+
+            {/* Current streak */}
+            {accuracy.currentStreak !== 0 && (
+              <div className={`rounded-md px-2 py-1.5 flex items-center justify-between ${
+                accuracy.currentStreak > 0
+                  ? "bg-[#2ed573]/10 border border-[#2ed573]/30"
+                  : "bg-[#ff4757]/10 border border-[#ff4757]/30"
+              }`}>
+                <div className="flex items-center gap-1 text-[11px]">
+                  <Flame className={`w-3 h-3 ${accuracy.currentStreak > 0 ? "text-[#2ed573]" : "text-[#ff4757]"}`} />
+                  <span className="text-[#8899cc]">Current streak:</span>
+                </div>
+                <span className={`text-sm font-bold ${
+                  accuracy.currentStreak > 0 ? "text-[#2ed573]" : "text-[#ff4757]"
+                }`}>
+                  {accuracy.currentStreak > 0
+                    ? `${accuracy.currentStreak}W`
+                    : `${Math.abs(accuracy.currentStreak)}L`}
+                </span>
+              </div>
+            )}
+
             {/* Per-strategy accuracy */}
             <div className="space-y-1.5">
               <div className="text-[10px] text-[#8899cc] uppercase tracking-wider">
-                Per-strategy real accuracy
+                Per-signal real accuracy
               </div>
               {accuracy.perStrategy.map((s) => {
                 const color = STRATEGY_COLOR[s.strategy] ?? "#6b7280";
@@ -108,16 +149,16 @@ export function AccuracyTracker({ accuracy, loading, error }: Props) {
                             className="text-xs font-bold"
                             style={{ color: "#448AFF" }}
                           >
-                            {s.resolved > 0 ? `${s.hitRate.toFixed(1)}%` : "—"}
+                            {s.verified > 0 ? `${s.winRate.toFixed(1)}%` : "—"}
                           </span>
                           <span className="text-[10px] text-[#5a6a99]">
-                            ({s.resolved > 0 ? `${s.top3HitRate.toFixed(0)}% top3` : "pending"})
+                            ({s.verified > 0 ? `${s.top3Rate.toFixed(0)}% top3` : "pending"})
                           </span>
                         </div>
                       </div>
                       <div className="flex items-center justify-between text-[9px] text-[#5a6a99]">
-                        <span>{s.total} predictions made</span>
-                        <span>{s.resolved} resolved · {s.hits} hits</span>
+                        <span>{s.total} predictions</span>
+                        <span>{s.verified} verified · {s.wins}W · {s.losses}L</span>
                       </div>
                     </div>
                   </div>
@@ -132,12 +173,12 @@ export function AccuracyTracker({ accuracy, loading, error }: Props) {
               </div>
               <ScrollArea className="max-h-64">
                 <ul className="space-y-1">
-                  {accuracy.recent.map((r) => {
+                  {accuracy.recentVerifications.map((r) => {
                     const color = STRATEGY_COLOR[r.strategy] ?? "#6b7280";
-                    const pending = r.resolvedAt === null || r.isHit === null;
+                    const pending = r.status === "PENDING";
                     return (
                       <li
-                        key={r.id}
+                        key={r.predictionId}
                         className="flex items-center gap-2 rounded-md bg-[#0d1020] border border-[#1e2240] px-2 py-1.5"
                       >
                         <div
@@ -155,9 +196,6 @@ export function AccuracyTracker({ accuracy, loading, error }: Props) {
                                 {relativeTime(r.predictedAt)}
                               </span>
                             </div>
-                            <span className="text-[9px] text-[#5a6a99]">
-                              {r.confidence}%
-                            </span>
                           </div>
                           <div className="flex items-center justify-between text-[11px] mt-0.5">
                             <span className="text-[#bcc6e0]">
@@ -177,7 +215,7 @@ export function AccuracyTracker({ accuracy, loading, error }: Props) {
                                 <span className="font-semibold text-white">
                                   {label(r.actualSector)}
                                 </span>
-                                {r.isHit ? (
+                                {r.status === "WIN" ? (
                                   <CheckCircle2 className="w-3 h-3 text-[#2ed573]" />
                                 ) : r.isTop3Hit ? (
                                   <span className="text-[8px] px-1 py-0.5 rounded bg-[#448AFF]/20 text-[#448AFF] font-bold">

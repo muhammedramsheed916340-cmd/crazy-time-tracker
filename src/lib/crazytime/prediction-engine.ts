@@ -1,7 +1,21 @@
 import "server-only";
-import { db } from "@/lib/db";
-import type { NormalizedSpin, NormalizedStats } from "@/lib/crazytime/types";
+import type { NormalizedSpin } from "@/lib/crazytime/types";
 import { BONUS_TYPES } from "@/lib/crazytime/constants";
+
+// Lazy-load Prisma client only when needed — this allows the prediction engine
+// to work even when the database isn't available (e.g., on Vercel serverless
+// without SQLite support). All DB operations are wrapped in try/catch.
+let _db: any = null;
+async function getDb() {
+  if (_db) return _db;
+  try {
+    const { db } = await import("@/lib/db");
+    _db = db;
+    return db;
+  } catch {
+    return null;
+  }
+}
 
 // ============================================================
 // PREDICTION ENGINE — Proper data-driven prediction with validation
@@ -544,6 +558,8 @@ export interface PredictionRecord {
 // Record a prediction to the DB with duplicate protection
 export async function recordPredictionToDB(record: PredictionRecord): Promise<void> {
   try {
+    const db = await getDb();
+    if (!db) return; // DB not available (e.g., Vercel serverless without SQLite)
     // Use upsert with the deterministic predictionId — if a prediction with
     // the same source spin + strategy already exists, don't create a duplicate.
     await db.predictionRecord.upsert({
@@ -590,6 +606,8 @@ export async function verifyPendingPredictions(
   if (validatedSpins.length < 2) return result;
 
   try {
+    const db = await getDb();
+    if (!db) return result;
     // Get all pending predictions
     const pending = await db.predictionRecord.findMany({
       where: { status: "PENDING" },
@@ -698,7 +716,22 @@ export interface AccuracyStats {
 }
 
 export async function getAccuracyFromDB(): Promise<AccuracyStats> {
+  const empty: AccuracyStats = {
+    totalPredictions: 0,
+    pending: 0,
+    verified: 0,
+    wins: 0,
+    losses: 0,
+    top3Hits: 0,
+    winRate: 0,
+    top3Rate: 0,
+    currentStreak: 0,
+    perStrategy: [],
+    recentVerifications: [],
+  };
   try {
+    const db = await getDb();
+    if (!db) return empty;
     const all = await db.predictionRecord.findMany({
       orderBy: { predictedAt: "desc" },
       take: 200,
