@@ -61,6 +61,7 @@ export interface PredictResponse {
     momentum: NextSpinSignal;
     hotTrend: NextSpinSignal;
     overdueBonus: NextSpinSignal;
+    coverage?: NextSpinSignal | null;
   } | null;
   ranked: {
     sector: string;

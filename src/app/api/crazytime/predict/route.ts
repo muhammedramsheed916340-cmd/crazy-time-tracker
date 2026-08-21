@@ -262,95 +262,74 @@ export async function GET(req: NextRequest) {
     // Sort by total score (highest first)
     dynamicScores.sort((a, b) => b.totalScore - a.totalScore);
 
-    // ===== SELECT TOP-3 — PREDICT THE NEXT SPIN (not the current one) =====
-    // The user complaint: "Last result anu new prediction add avunnadu"
-    // = The last result is being shown as the prediction. This is NOT a
-    // prediction — it's just echoing what already happened.
-    //
-    // FIX: Exclude the last actual spin from the top-3 picks. The engine
-    // still SCORES it normally (for the evidence display), but the
-    // prediction boxes show what should come NEXT — not what just happened.
-    //
-    // Walk-forward backtest shows:
-    // - Repeats happen ~22% of the time (so 78% chance a different sector hits)
-    // - Picking from the remaining 7 sectors covers ~78% of outcomes
-    // - The top 3 remaining (usually 2, 5, + 1 bonus) cover ~55-60%
-    //
-    // This is the CORRECT approach: predict what comes NEXT, don't echo the past.
+    // ===== SELECT TOP-4 — PREDICT THE NEXT SPIN =====
+    // 4 signals = better coverage. Top-3 by score + 1 diversity pick.
+    // Exclude the last actual spin (we predict NEXT, not repeat).
     const lastSpinSector = latestSpin?.result ?? null;
 
-    // Filter OUT the last spin — we're predicting the NEXT spin, not repeating it
     const sortedSectors = dynamicScores
       .filter(s => s.sector !== lastSpinSector)
       .map(s => s.sector);
-    const top3Sectors: string[] = [];
+    const top4Sectors: string[] = [];
 
     // Signal 1: highest-scoring sector (excluding last spin)
-    if (sortedSectors[0]) top3Sectors.push(sortedSectors[0]);
+    if (sortedSectors[0]) top4Sectors.push(sortedSectors[0]);
 
     // Signal 2: highest-scoring sector NOT already picked
     for (const s of sortedSectors) {
-      if (!top3Sectors.includes(s)) {
-        top3Sectors.push(s);
-        break;
-      }
+      if (!top4Sectors.includes(s)) { top4Sectors.push(s); break; }
     }
 
-    // Signal 3: diversity pick — if both picks are numbers, prefer a bonus
-    const pickedAreAllNumbers = top3Sectors.every(s => !BONUS_SET.has(s));
-    let thirdPick: string | null = null;
+    // Signal 3: highest-scoring sector NOT already picked
+    for (const s of sortedSectors) {
+      if (!top4Sectors.includes(s)) { top4Sectors.push(s); break; }
+    }
 
+    // Signal 4: diversity pick — if all 3 are numbers, add best bonus
+    const pickedAreAllNumbers = top4Sectors.every(s => !BONUS_SET.has(s));
+    let fourthPick: string | null = null;
     if (pickedAreAllNumbers) {
       for (const s of sortedSectors) {
-        if (!top3Sectors.includes(s) && BONUS_SET.has(s)) {
+        if (!top4Sectors.includes(s) && BONUS_SET.has(s)) {
           const score = dynamicScores.find(d => d.sector === s);
-          if (score && score.totalScore > 8) {
-            thirdPick = s;
-            break;
-          }
+          if (score && score.totalScore > 3) { fourthPick = s; break; }
         }
       }
     }
-    // Fallback: next best unique sector (excluding last spin)
-    if (!thirdPick) {
+    if (!fourthPick) {
       for (const s of sortedSectors) {
-        if (!top3Sectors.includes(s)) {
-          thirdPick = s;
-          break;
-        }
+        if (!top4Sectors.includes(s)) { fourthPick = s; break; }
       }
     }
-    if (thirdPick) top3Sectors.push(thirdPick);
+    if (fourthPick) top4Sectors.push(fourthPick);
 
-    // FINAL GUARANTEE: ensure 3 unique sectors, none = last spin
-    const uniqueTop3 = [...new Set(top3Sectors)].filter(s => s !== lastSpinSector);
-    while (uniqueTop3.length < 3 && uniqueTop3.length < sortedSectors.length) {
-      const next = sortedSectors.find(s => !uniqueTop3.includes(s) && s !== lastSpinSector);
-      if (next) uniqueTop3.push(next);
-      else break;
+    // FINAL GUARANTEE: 4 unique sectors, none = last spin
+    const uniqueTop4 = [...new Set(top4Sectors)].filter(s => s !== lastSpinSector);
+    while (uniqueTop4.length < 4 && uniqueTop4.length < sortedSectors.length) {
+      const next = sortedSectors.find(s => !uniqueTop4.includes(s) && s !== lastSpinSector);
+      if (next) uniqueTop4.push(next); else break;
     }
-    top3Sectors.length = 0;
-    top3Sectors.push(...uniqueTop3);
+    top4Sectors.length = 0;
+    top4Sectors.push(...uniqueTop4);
 
-    console.log(`[predict] Last spin: ${label(lastSpinSector)} | Predicted NEXT: ${top3Sectors.map(s => label(s)).join(", ")} | Unique: ${new Set(top3Sectors).size === top3Sectors.length} | Not repeating last: ${!top3Sectors.includes(lastSpinSector ?? "")}`);
-
+    console.log(`[predict] Last spin: ${label(lastSpinSector)} | Predicted NEXT (4): ${top4Sectors.map(s => label(s)).join(", ")} | Unique: ${new Set(top4Sectors).size === top4Sectors.length}`);
     // Keep for evidence display
     const candidates = scoreCandidates(analysis, { frequency: 0.25, recency: 0.15, transition: 0.25, interval: 0.10, distribution: 0.10, momentum: 0.15, info: "Revo Fixer distribution" }, lastSpinResult);
 
-    // ===== 9. GENERATE 3 SIGNALS =====
-    const signals = top3Sectors.map((sector, idx) => {
+    // ===== 9. GENERATE 4 SIGNALS =====
+    const signals = top4Sectors.map((sector, idx) => {
       const ds = dynamicScores.find(s => s.sector === sector)!;
       const stat = stats.aggStats.find(s => s.wheelResult === sector);
-      const recentStat = analysis.recent.sectorStats[sector];
-      const longStat = analysis.long.sectorStats[sector];
       const isBonus = BONUS_SET.has(sector);
 
-      // Confidence based on the sector's dynamic score (honest, not inflated)
       const baseFreq = stat?.percentage ?? 0;
       const recentFreq = ds.freqPct;
       let confidence = Math.round(30 + Math.min(55, (baseFreq * 0.4 + recentFreq * 0.4 + ds.transPct * 0.2) * 1.3));
       if (isBonus) confidence = Math.min(confidence, 65);
       confidence = Math.max(30, Math.min(85, confidence));
+
+      const strategyNames = ["momentum", "hot_trend", "overdue_bonus", "coverage"];
+      const strategyTitles = ["Signal #1 (Top Pick)", "Signal #2", "Signal #3", "Signal #4 (Coverage)"];
 
       return {
         sector,
@@ -360,28 +339,23 @@ export async function GET(req: NextRequest) {
         modelScore: Math.round(ds.totalScore * 100) / 100,
         signals: [
           {
-            label: `Theoretical wheel probability (40% weight)`,
-            detail: `${ds.theoreticalPct?.toFixed(1)}% base probability (wheel segment ratio) — stable anchor`,
-            weight: 0.40,
+            label: `Revo Fixer distribution (50% weight)`,
+            detail: `${ds.revoPct?.toFixed(1)}% base probability`,
+            weight: 0.50,
           },
           {
             label: `Markov-1: after ${label(lastResult)} (25% weight)`,
-            detail: `${ds.transPct.toFixed(1)}% probability (${transMap[sector] ?? 0}/${transTotal} transitions)`,
+            detail: `${ds.transPct.toFixed(1)}% (${transMap[sector] ?? 0}/${transTotal})`,
             weight: 0.25,
           },
           {
             label: `Markov-2: after ${label(secondLastSpin)}→${label(lastSpin)} (15% weight)`,
-            detail: `${ds.trans2Pct?.toFixed(1)}% probability (${trans2Map[sector] ?? 0}/${trans2Total} transitions)`,
+            detail: `${ds.trans2Pct?.toFixed(1)}% (${trans2Map[sector] ?? 0}/${trans2Total})`,
             weight: 0.15,
           },
           {
             label: `Recent-100 frequency (10% weight)`,
-            detail: `${ds.freqPct.toFixed(1)}% (${freq100[sector] ?? 0} hits in last 100)`,
-            weight: 0.10,
-          },
-          {
-            label: `Recency (10% weight)`,
-            detail: `Last appeared ${ds.recency ?? '?'} spins ago`,
+            detail: `${ds.freqPct.toFixed(1)}% (${freq100[sector] ?? 0} hits)`,
             weight: 0.10,
           },
         ],
@@ -393,24 +367,25 @@ export async function GET(req: NextRequest) {
         generatedAt: new Date().toISOString(),
         sessionTotal: 0,
         modelAccuracy: accuracy && accuracy.verified > 0 ? accuracy.top3Rate : null,
-        strategy: idx === 0 ? "momentum" : idx === 1 ? "hot_trend" : "overdue_bonus",
-        strategyTitle: idx === 0 ? "Signal #1 (Top Pick)" : idx === 1 ? "Signal #2 (2nd Pick)" : "Signal #3 (3rd Pick)",
+        strategy: strategyNames[idx] ?? "coverage",
+        strategyTitle: strategyTitles[idx] ?? `Signal #${idx + 1}`,
         observed: {
           recentHits: freq100[sector] ?? 0,
           recentWindow: 100,
           recentPercentage: ds.freqPct,
-          momentumDelta: ds.momentum,
+          momentumDelta: ds.momentum ?? 0,
         },
       };
     });
 
+
     // ===== 10. RECORD PREDICTIONS TO DB (with logging) =====
     let recordsCreated = 0;
     if (latestSpin && databaseStatus === "AVAILABLE") {
-      const topSectors = top3Sectors;
+      const topSectors = top4Sectors;
       for (let i = 0; i < signals.length; i++) {
         const sig = signals[i];
-        const strategy = i === 0 ? "momentum" : i === 1 ? "hot_trend" : "overdue_bonus";
+        const strategy = ["momentum", "hot_trend", "overdue_bonus", "coverage"][i] ?? "coverage";
         const predictionId = `pred_${latestSpin.spinId}_${strategy}`;
         try {
           const success = await recordPredictionToDB({
@@ -448,6 +423,7 @@ export async function GET(req: NextRequest) {
         momentum: signals[0] ?? null,
         hotTrend: signals[1] ?? null,
         overdueBonus: signals[2] ?? null,
+        coverage: signals[3] ?? null,
       },
       ranked: dynamicScores.slice(0, 8).map((c) => ({
         sector: c.sector,

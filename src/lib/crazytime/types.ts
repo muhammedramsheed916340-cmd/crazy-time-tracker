@@ -296,4 +296,5 @@ export interface NextSpinSignal {
 export type PredictionStrategy =
   | "momentum" // weighted by recent spins (live momentum)
   | "hot_trend" // 24h hot frequency (sectors above long-term average)
-  | "overdue_bonus"; // most-overdue bonus round
+  | "overdue_bonus" // most-overdue bonus round
+  | "coverage"; // diversity/coverage pick

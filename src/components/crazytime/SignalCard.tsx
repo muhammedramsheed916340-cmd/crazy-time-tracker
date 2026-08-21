@@ -29,7 +29,7 @@ import {
 // new spin arriving — no need to wait for the full countdown.
 const COUNTDOWN_SECONDS = 30;
 
-type StrategyKey = "momentum" | "hotTrend" | "overdueBonus";
+type StrategyKey = "momentum" | "hotTrend" | "overdueBonus" | "coverage";
 
 const STRATEGY_META: Record<
   StrategyKey,
@@ -55,6 +55,13 @@ const STRATEGY_META: Record<
     icon: Hourglass,
     accent: "#FFD700",
     short: "ENSEMBLE-3",
+  },
+  coverage: {
+    title: "SIGNAL 4",
+    subtitle: "Coverage Pick",
+    icon: Target,
+    accent: "#2ed573",
+    short: "COVERAGE",
   },
 };
 
@@ -240,6 +247,7 @@ export function SignalCard({
     { key: "momentum", signal: signals?.momentum ?? null },
     { key: "hotTrend", signal: signals?.hotTrend ?? null },
     { key: "overdueBonus", signal: signals?.overdueBonus ?? null },
+    { key: "coverage", signal: signals?.coverage ?? null },
   ];
 
   return (
@@ -255,7 +263,7 @@ export function SignalCard({
       {/* Label */}
       <div className="text-center text-[#448AFF] text-[11px] font-semibold mb-3 uppercase tracking-[2px] flex items-center justify-center gap-1.5">
         <Bolt className="w-3.5 h-3.5" />
-        3 LIVE PREDICTIONS
+        4 LIVE PREDICTIONS
         {lastUpdated && (
           <span className="text-[#8899cc] ml-2 normal-case tracking-normal font-normal">
             • {new Date(lastUpdated).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
@@ -311,7 +319,7 @@ export function SignalCard({
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
           {signalsList.map(({ key, signal }) => (
             <SignalMiniCard
               key={key}
