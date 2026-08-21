@@ -167,52 +167,77 @@ export async function GET(req: NextRequest) {
     for (const c of Object.values(transMap)) transTotal += c;
 
     // Get adaptive weights from walk-forward validation
-    // This automatically adjusts based on recent verified results
     const validatedWeights = computeAdaptiveWeightsFromWalkForward(validatedSpins);
 
-    // Use the adaptive weights to blend signals
-    // The walk-forward function returns weights for 6 components:
-    // frequency, recency, transition, interval, distribution, momentum
-    // We map these to our 4 live signals
-    const wFreq = validatedWeights.frequency + validatedWeights.distribution; // frequency + base distribution
-    const wTrans = validatedWeights.transition;
-    const wMom = validatedWeights.momentum;
-    const wRecency = validatedWeights.recency + validatedWeights.interval; // recency + overdue
-    const wSum = wFreq + wTrans + wMom + wRecency;
+    // ===== SCORING: blend theoretical + empirical =====
+    // The KEY insight from backtesting: recent frequency alone just mirrors
+    // what already happened. To actually PREDICT the next spin, we need:
+    // 1. THEORETICAL base probability (the wheel's actual segment ratios)
+    // 2. Markov order-1 AND order-2 transitions (what comes after last 1-2 spins)
+    // 3. A small recency correction (catch sectors heating up)
+    //
+    // Weights: 50% theoretical + 30% Markov + 10% momentum + 10% recency
+    // This gives stable predictions that DON'T just mirror recent results.
+    const WHEEL_BASE: Record<string, number> = {
+      "1": 38.10, "2": 19.05, "5": 14.29, "10": 4.76,
+      Pachinko: 9.52, CashHunt: 9.52, CoinFlip: 4.76, CrazyBonus: 4.76,
+    };
 
-    // Score every sector dynamically using the ADAPTIVE weights
+    // Compute Markov order-2 transitions (after last TWO spins)
+    const lastSpin = validatedSpins[validatedSpins.length - 1]?.result ?? null;
+    const secondLastSpin = validatedSpins[validatedSpins.length - 2]?.result ?? null;
+    const order2State = lastSpin && secondLastSpin ? `${secondLastSpin}|${lastSpin}` : null;
+
+    const trans2Map: Record<string, number> = {};
+    let trans2Total = 0;
+    if (order2State) {
+      for (let i = 0; i < validatedSpins.length - 2; i++) {
+        const state = `${validatedSpins[i].result}|${validatedSpins[i + 1].result}`;
+        if (state === order2State) {
+          const next = validatedSpins[i + 2].result;
+          trans2Map[next] = (trans2Map[next] ?? 0) + 1;
+          trans2Total++;
+        }
+      }
+    }
+
+    // Score every sector using theoretical + empirical blend
     const dynamicScores = ALL_SECTORS.map(sector => {
       const recentStat = analysis.recent.sectorStats[sector];
-      const longStat = analysis.long.sectorStats[sector];
       const stat = stats.aggStats.find(s => s.wheelResult === sector);
 
-      // Signal 1: Recent-100 frequency (0-100)
+      // Signal 1: THEORETICAL base probability (stable, doesn't mirror recent)
+      const theoreticalPct = WHEEL_BASE[sector] ?? 0;
+
+      // Signal 2: Markov order-1 (what comes after the last spin)
+      const trans1Pct = transTotal > 0 ? ((transMap[sector] ?? 0) / transTotal) * 100 : 0;
+
+      // Signal 3: Markov order-2 (what comes after the last TWO spins)
+      const trans2Pct = trans2Total > 0 ? ((trans2Map[sector] ?? 0) / trans2Total) * 100 : 0;
+
+      // Signal 4: Recent-100 frequency (small correction, not dominant)
       const freqPct = ((freq100[sector] ?? 0) / Math.max(1, recent100.length)) * 100;
 
-      // Signal 2: Markov transition probability (0-100)
-      const transPct = transTotal > 0 ? ((transMap[sector] ?? 0) / transTotal) * 100 : 0;
-
-      // Signal 3: Momentum delta (recent% - long%)
+      // Blend: 40% theoretical + 25% Markov-1 + 15% Markov-2 + 10% recent freq + 10% recency
       const momentum = recentStat?.momentumDelta ?? 0;
-      const momentumScore = Math.max(0, Math.min(100, 50 + momentum * 2));
-
-      // Signal 4: Recency bonus (0-100) — lower gap = higher score
       const recencyScore = recentStat
         ? Math.max(0, 100 - (recentStat.recency / Math.max(1, analysis.recent.totalSpins)) * 100)
         : 0;
 
-      // Combined score using ADAPTIVE weights (from walk-forward validation)
       const totalScore =
-        (freqPct * (wFreq / wSum)) +
-        (transPct * (wTrans / wSum)) +
-        (momentumScore * (wMom / wSum)) +
-        (recencyScore * (wRecency / wSum));
+        theoreticalPct * 0.40 +
+        trans1Pct * 0.25 +
+        trans2Pct * 0.15 +
+        freqPct * 0.10 +
+        recencyScore * 0.10;
 
       return {
         sector,
         sectorLabel: label(sector),
         freqPct,
-        transPct,
+        transPct: trans1Pct,
+        trans2Pct,
+        theoreticalPct,
         momentum,
         recencyScore,
         totalScore,
@@ -325,24 +350,29 @@ export async function GET(req: NextRequest) {
         modelScore: Math.round(ds.totalScore * 100) / 100,
         signals: [
           {
-            label: `Recent-100 frequency (${Math.round((wFreq / wSum) * 100)}% adaptive weight)`,
-            detail: `${ds.freqPct.toFixed(1)}% (${freq100[sector] ?? 0} hits in last 100 spins) — base signal`,
-            weight: Math.round((wFreq / wSum) * 100) / 100,
+            label: `Theoretical wheel probability (40% weight)`,
+            detail: `${ds.theoreticalPct?.toFixed(1)}% base probability (wheel segment ratio) — stable anchor`,
+            weight: 0.40,
           },
           {
-            label: `Markov transition after ${label(lastResult)} (${Math.round((wTrans / wSum) * 100)}% adaptive weight)`,
-            detail: `${ds.transPct.toFixed(1)}% probability (${transMap[sector] ?? 0} out of ${transTotal} transitions)`,
-            weight: Math.round((wTrans / wSum) * 100) / 100,
+            label: `Markov-1: after ${label(lastResult)} (25% weight)`,
+            detail: `${ds.transPct.toFixed(1)}% probability (${transMap[sector] ?? 0}/${transTotal} transitions)`,
+            weight: 0.25,
           },
           {
-            label: `Momentum (${Math.round((wMom / wSum) * 100)}% adaptive weight)`,
-            detail: `${ds.momentum >= 0 ? '+' : ''}${ds.momentum.toFixed(2)}% vs long-term — ${ds.momentum > 0 ? 'heating up' : ds.momentum < -5 ? 'cooling down' : 'stable'}`,
-            weight: Math.round((wMom / wSum) * 100) / 100,
+            label: `Markov-2: after ${label(secondLastSpin)}→${label(lastSpin)} (15% weight)`,
+            detail: `${ds.trans2Pct?.toFixed(1)}% probability (${trans2Map[sector] ?? 0}/${trans2Total} transitions)`,
+            weight: 0.15,
           },
           {
-            label: `Recency (${Math.round((wRecency / wSum) * 100)}% adaptive weight)`,
-            detail: `Last appeared ${ds.recency ?? '?'} spins ago — score ${ds.recencyScore.toFixed(1)}`,
-            weight: Math.round((wRecency / wSum) * 100) / 100,
+            label: `Recent-100 frequency (10% weight)`,
+            detail: `${ds.freqPct.toFixed(1)}% (${freq100[sector] ?? 0} hits in last 100)`,
+            weight: 0.10,
+          },
+          {
+            label: `Recency (10% weight)`,
+            detail: `Last appeared ${ds.recency ?? '?'} spins ago`,
+            weight: 0.10,
           },
         ],
         isBonus,
