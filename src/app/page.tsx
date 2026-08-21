@@ -115,6 +115,8 @@ export default function Home() {
             accuracy={predict.accuracy}
             loading={predict.loading}
             error={predict.error}
+            databaseStatus={predict.databaseStatus}
+            accuracyStatus={predict.accuracyStatus}
           />
         </div>
 

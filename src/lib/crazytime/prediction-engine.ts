@@ -2,19 +2,61 @@ import "server-only";
 import type { NormalizedSpin } from "@/lib/crazytime/types";
 import { BONUS_TYPES } from "@/lib/crazytime/constants";
 
-// Lazy-load Prisma client only when needed — this allows the prediction engine
-// to work even when the database isn't available (e.g., on Vercel serverless
-// without SQLite support). All DB operations are wrapped in try/catch.
+// ============================================================
+// DATABASE CONNECTION MANAGEMENT
+// ============================================================
+// Lazy-load Prisma client and test the connection. On Vercel serverless,
+// SQLite file paths (file:/home/z/my-project/db/custom.db) don't exist —
+// the filesystem is ephemeral. We detect this and report it clearly.
+//
+// DB availability states:
+// - "AVAILABLE": DB is connected and working (local dev or Vercel with proper DB)
+// - "UNAVAILABLE": DB connection failed (Vercel without proper DATABASE_URL)
+//
+// When unavailable, predictions still generate from live data, but
+// persistence/verification/accuracy tracking won't work.
+
 let _db: any = null;
-async function getDb() {
+let _dbStatus: "UNKNOWN" | "AVAILABLE" | "UNAVAILABLE" = "UNKNOWN";
+let _dbError: string | null = null;
+
+async function getDb(): Promise<any | null> {
+  if (_dbStatus === "UNAVAILABLE") return null;
   if (_db) return _db;
   try {
     const { db } = await import("@/lib/db");
+    // Test the connection with a simple count query
+    await db.predictionRecord.count();
     _db = db;
+    _dbStatus = "AVAILABLE";
+    console.log("[prediction-engine] Database connected successfully");
     return db;
-  } catch {
+  } catch (err) {
+    _dbStatus = "UNAVAILABLE";
+    _dbError = err instanceof Error ? err.message : String(err);
+    console.error("[prediction-engine] Database UNAVAILABLE:", _dbError);
     return null;
   }
+}
+
+// Check if the database is available (without throwing)
+export async function checkDbAvailability(): Promise<{
+  available: boolean;
+  status: "AVAILABLE" | "UNAVAILABLE";
+  error: string | null;
+}> {
+  if (_dbStatus === "AVAILABLE") {
+    return { available: true, status: "AVAILABLE", error: null };
+  }
+  if (_dbStatus === "UNAVAILABLE") {
+    return { available: false, status: "UNAVAILABLE", error: _dbError };
+  }
+  // Unknown — try to connect
+  const db = await getDb();
+  if (db) {
+    return { available: true, status: "AVAILABLE", error: null };
+  }
+  return { available: false, status: "UNAVAILABLE", error: _dbError };
 }
 
 // ============================================================
@@ -556,10 +598,13 @@ export interface PredictionRecord {
 }
 
 // Record a prediction to the DB with duplicate protection
-export async function recordPredictionToDB(record: PredictionRecord): Promise<void> {
+export async function recordPredictionToDB(record: PredictionRecord): Promise<boolean> {
   try {
     const db = await getDb();
-    if (!db) return; // DB not available (e.g., Vercel serverless without SQLite)
+    if (!db) {
+      console.warn("[prediction-engine] recordPredictionToDB SKIPPED — DB unavailable");
+      return false;
+    }
     // Use upsert with the deterministic predictionId — if a prediction with
     // the same source spin + strategy already exists, don't create a duplicate.
     await db.predictionRecord.upsert({
@@ -579,8 +624,11 @@ export async function recordPredictionToDB(record: PredictionRecord): Promise<vo
       },
       update: {},  // don't update if already exists (idempotent)
     });
+    console.log(`[prediction-engine] DB WRITE SUCCESS: predictionId=${record.predictionId} strategy=${record.strategy} predicted=${record.predictedLabel} sourceSpin=${record.sourceSpinId} status=PENDING`);
+    return true;
   } catch (err) {
-    console.error("[prediction-engine] recordPredictionToDB error:", err);
+    console.error(`[prediction-engine] DB WRITE FAILED: predictionId=${record.predictionId} error=${err instanceof Error ? err.message : String(err)}`);
+    return false;
   }
 }
 
@@ -650,8 +698,12 @@ export async function verifyPendingPredictions(
       }
       const isTop3Hit = topSectors.includes(actualSector);
 
+      // CRITICAL: Verify against the NEXT spin, not the same spin that generated
+      // the prediction. sourceIdx + 1 = the spin AFTER the source spin.
+      // This is already correct — actualSpin is at nextIdx = sourceIdx + 1.
+
       // Update the prediction record (idempotent — only if still PENDING)
-      await db.predictionRecord.updateMany({
+      const updateResult = await db.predictionRecord.updateMany({
         where: {
           predictionId: pred.predictionId,
           status: "PENDING",  // only update if still pending (idempotent)
@@ -665,6 +717,8 @@ export async function verifyPendingPredictions(
           status: isHit ? "WIN" : "LOSS",
         },
       });
+
+      console.log(`[prediction-engine] VERIFICATION: predictionId=${pred.predictionId} sourceSpinId=${pred.sourceSpinId} actualSpinId=${actualSpin.spinId} predicted=${pred.predictedSector} actual=${actualSector} status=${isHit ? "WIN" : "LOSS"} updated=${updateResult.count}`);
 
       result.verified++;
       if (isHit) result.wins++;

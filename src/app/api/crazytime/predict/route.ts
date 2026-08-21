@@ -17,6 +17,7 @@ import {
   recordPredictionToDB,
   verifyPendingPredictions,
   getAccuracyFromDB,
+  checkDbAvailability,
 } from "@/lib/crazytime/prediction-engine";
 import type { NormalizedStats } from "@/lib/crazytime/types";
 
@@ -65,25 +66,32 @@ export async function GET(req: NextRequest) {
     const latestSpin = validatedSpins[validatedSpins.length - 1] ?? null;
     const isStale = !latestSpin || (Date.now() - new Date(latestSpin.timestamp).getTime() > 10 * 60 * 1000);
 
-    // ===== 3. VERIFY PENDING PREDICTIONS (throttled, non-blocking) =====
+    // ===== 3. CHECK DB AVAILABILITY =====
+    const dbCheck = await checkDbAvailability();
+    const databaseStatus = dbCheck.status; // "AVAILABLE" or "UNAVAILABLE"
+
+    // ===== 4. VERIFY PENDING PREDICTIONS (only if DB available) =====
     let verificationResult = { verified: 0, wins: 0, losses: 0, top3Hits: 0 };
-    if (canDoDbOps) {
+    if (databaseStatus === "AVAILABLE" && canDoDbOps) {
       lastDbOpTime = now;
-      void (async () => {
-        try {
-          await verifyPendingPredictions(validatedSpins);
-        } catch (err) {
-          console.error("[predict] verification error:", err);
-        }
-      })();
+      try {
+        verificationResult = await verifyPendingPredictions(validatedSpins);
+        console.log(`[predict] Verification result: verified=${verificationResult.verified} wins=${verificationResult.wins} losses=${verificationResult.losses}`);
+      } catch (err) {
+        console.error("[predict] verification error:", err);
+      }
     }
 
-    // ===== 4. GET ACCURACY FROM DB (with timeout protection) =====
+    // ===== 5. GET ACCURACY FROM DB =====
     let accuracy: any = null;
-    try {
-      accuracy = await getAccuracyFromDB();
-    } catch (err) {
-      console.error("[predict] accuracy fetch error:", err);
+    let accuracyStatus: "AVAILABLE" | "UNAVAILABLE" | "EMPTY" = "UNAVAILABLE";
+    if (databaseStatus === "AVAILABLE") {
+      try {
+        accuracy = await getAccuracyFromDB();
+        accuracyStatus = accuracy && accuracy.totalPredictions > 0 ? "AVAILABLE" : "EMPTY";
+      } catch (err) {
+        console.error("[predict] accuracy fetch error:", err);
+      }
     }
 
     // ===== 5. DATA NOT READY — return empty with clear status =====
@@ -194,38 +202,46 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    // ===== 10. RECORD PREDICTIONS TO DB (throttled, non-blocking) =====
-    if (latestSpin && canDoDbOps) {
+    // ===== 10. RECORD PREDICTIONS TO DB (with logging) =====
+    let recordsCreated = 0;
+    if (latestSpin && databaseStatus === "AVAILABLE") {
       const topSectors = top3.map((c) => c.sector);
-      void (async () => {
-        for (let i = 0; i < signals.length; i++) {
-          const sig = signals[i];
-          const strategy = i === 0 ? "momentum" : i === 1 ? "hot_trend" : "overdue_bonus";
-          try {
-            await recordPredictionToDB({
-              predictionId: `pred_${latestSpin.spinId}_${strategy}`,
-              strategy,
-              predictedSector: sig.sector,
-              predictedLabel: sig.sectorLabel,
-              topSectors,
-              confidence: sig.confidence,
-              modelScore: sig.modelScore,
-              observedHitRate: sig.observedPercentage,
-              sourceSpinId: latestSpin.spinId,
-              sourceSpinTimestamp: latestSpin.timestamp,
-              status: "PENDING",
-            });
-          } catch (err) {
-            console.error("[predict] recordPredictionToDB error:", err);
-          }
+      for (let i = 0; i < signals.length; i++) {
+        const sig = signals[i];
+        const strategy = i === 0 ? "momentum" : i === 1 ? "hot_trend" : "overdue_bonus";
+        const predictionId = `pred_${latestSpin.spinId}_${strategy}`;
+        try {
+          const success = await recordPredictionToDB({
+            predictionId,
+            strategy,
+            predictedSector: sig.sector,
+            predictedLabel: sig.sectorLabel,
+            topSectors,
+            confidence: sig.confidence,
+            modelScore: sig.modelScore,
+            observedHitRate: sig.observedPercentage,
+            sourceSpinId: latestSpin.spinId,
+            sourceSpinTimestamp: latestSpin.timestamp,
+            status: "PENDING",
+          });
+          if (success) recordsCreated++;
+        } catch (err) {
+          console.error(`[predict] recordPredictionToDB FAILED: predictionId=${predictionId} error=${err instanceof Error ? err.message : String(err)}`);
         }
-      })();
+      }
+      console.log(`[predict] Recorded ${recordsCreated}/${signals.length} predictions to DB (sourceSpin=${latestSpin.spinId})`);
+    } else if (databaseStatus === "UNAVAILABLE") {
+      console.warn("[predict] DB UNAVAILABLE — predictions NOT persisted. Accuracy tracking will not work.");
     }
 
     // ===== 11. RETURN RESPONSE =====
     return NextResponse.json({
       dataReady: true,
       status: "READY",
+      databaseStatus,
+      accuracyStatus,
+      databaseError: databaseStatus === "UNAVAILABLE" ? dbCheck.error : null,
+      recordsCreated,
       signals: {
         momentum: signals[0] ?? null,
         hotTrend: signals[1] ?? null,

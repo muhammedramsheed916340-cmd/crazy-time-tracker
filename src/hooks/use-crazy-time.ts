@@ -53,7 +53,10 @@ export interface AccuracyStats {
 export interface PredictResponse {
   dataReady?: boolean;
   status?: string;
-  message?: string;
+  databaseStatus?: "AVAILABLE" | "UNAVAILABLE";
+  accuracyStatus?: "AVAILABLE" | "UNAVAILABLE" | "EMPTY";
+  databaseError?: string | null;
+  recordsCreated?: number;
   signals: {
     momentum: NextSpinSignal;
     hotTrend: NextSpinSignal;
@@ -286,7 +289,10 @@ export function useCrazyTimePredict() {
   return {
     dataReady: data?.dataReady ?? false,
     status: data?.status ?? null,
-    statusMessage: data?.message ?? null,
+    databaseStatus: data?.databaseStatus ?? null,
+    accuracyStatus: data?.accuracyStatus ?? null,
+    databaseError: data?.databaseError ?? null,
+    recordsCreated: data?.recordsCreated ?? 0,
     signals: data?.signals ?? null,
     ranked: data?.ranked ?? [],
     accuracy: data?.accuracy ?? null,

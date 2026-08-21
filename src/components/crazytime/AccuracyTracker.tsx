@@ -7,12 +7,14 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState, SectionError } from "@/components/crazytime/EmptyState";
 import { relativeTime, label } from "@/lib/crazytime/adapter";
 import type { AccuracyStats } from "@/hooks/use-crazy-time";
-import { CheckCircle2, XCircle, Clock3, Target, Trophy, BarChart3, Flame } from "lucide-react";
+import { CheckCircle2, XCircle, Clock3, Target, Trophy, BarChart3, Flame, AlertTriangle } from "lucide-react";
 
 interface Props {
   accuracy: AccuracyStats | null | undefined;
   loading: boolean;
   error: string | null;
+  databaseStatus?: "AVAILABLE" | "UNAVAILABLE" | null;
+  accuracyStatus?: "AVAILABLE" | "UNAVAILABLE" | "EMPTY" | null;
 }
 
 const STRATEGY_LABEL: Record<string, string> = {
@@ -27,7 +29,7 @@ const STRATEGY_COLOR: Record<string, string> = {
   overdue_bonus: "#FFD700",
 };
 
-export function AccuracyTracker({ accuracy, loading, error }: Props) {
+export function AccuracyTracker({ accuracy, loading, error, databaseStatus, accuracyStatus }: Props) {
   return (
     <Card className="bg-[#141827] border-[#1e2240] text-white h-full flex flex-col">
       <CardHeader className="pb-2 flex flex-row items-center justify-between space-y-0">
@@ -50,6 +52,24 @@ export function AccuracyTracker({ accuracy, loading, error }: Props) {
             <Skeleton className="h-20 w-full bg-[#1e2240]" />
             <Skeleton className="h-10 w-full bg-[#1e2240]" />
             <Skeleton className="h-10 w-full bg-[#1e2240]" />
+          </div>
+        ) : databaseStatus === "UNAVAILABLE" ? (
+          <div className="flex flex-col items-center justify-center py-6 text-center gap-2">
+            <div className="w-10 h-10 rounded-full bg-[#ff4757]/10 flex items-center justify-center">
+              <AlertTriangle className="w-5 h-5 text-[#ff4757]" />
+            </div>
+            <p className="text-sm text-[#ff4757] font-semibold">
+              Database Unavailable
+            </p>
+            <p className="text-[11px] text-[#8899cc] max-w-xs">
+              Predictions are generating correctly from live data, but the
+              database isn&apos;t configured on this server. Persistence,
+              verification, and accuracy tracking are disabled.
+            </p>
+            <p className="text-[10px] text-[#5a6a99] mt-1">
+              Set DATABASE_URL to a persistent database (PostgreSQL/Neon) in
+              Vercel Environment Variables to enable accuracy tracking.
+            </p>
           </div>
         ) : !accuracy || accuracy.totalPredictions === 0 ? (
           <EmptyState message="Click GET SIGNAL — predictions will be verified against the real next spin and tracked here." />
