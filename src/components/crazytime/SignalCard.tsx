@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useCrazyTimePredict } from "@/hooks/use-crazy-time";
+import { useClientPredictionTracker } from "@/hooks/use-client-prediction-tracker";
 import { relativeTime, label } from "@/lib/crazytime/adapter";
 import type { NextSpinSignal } from "@/lib/crazytime/types";
 import {
@@ -88,6 +89,9 @@ export function SignalCard({
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const spinCheckRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Client-side prediction tracker (localStorage-based, works on Vercel)
+  const clientTracker = useClientPredictionTracker();
+
   const runPredict = useCallback(async () => {
     setAnalysing(true);
     await new Promise((r) => setTimeout(r, 600));
@@ -97,6 +101,30 @@ export function SignalCard({
     setCountdown(COUNTDOWN_SECONDS);
     setNewSpinDetected(false);
   }, [fetchNow]);
+
+  // After predictions are fetched, record them to the client tracker
+  // (localStorage). This runs whenever `signals` or `lastActualSpin` changes.
+  const prevPredictionKey = useRef<string>("");
+  useEffect(() => {
+    if (signals && lastActualSpin?.sector) {
+      // Use the lastActualSpin as the source spin for recording
+      // We need the spin ID — get it from the API response's lastActualSpin
+      // The predict API returns lastActualSpin with sector/settledAt but not id
+      // So we use the settledAt timestamp as a unique identifier
+      const sourceKey = lastActualSpin.settledAt ?? "";
+      if (sourceKey && sourceKey !== prevPredictionKey.current) {
+        prevPredictionKey.current = sourceKey;
+        // We need to find the actual spin ID from the events hook
+        // For now, use the settledAt timestamp as a fallback ID
+        const sourceSpinId = sourceKey; // timestamp-based fallback
+        clientTracker.recordSignals(
+          signals,
+          sourceSpinId,
+          sourceSpinId
+        );
+      }
+    }
+  }, [signals, lastActualSpin, clientTracker]);
 
   // Countdown timer (60s auto-refresh)
   useEffect(() => {
