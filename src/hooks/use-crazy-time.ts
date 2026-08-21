@@ -19,36 +19,41 @@ export interface StatsResponse {
 }
 
 export interface AccuracyStats {
-  total: number;
-  resolved: number;
-  hits: number;
+  totalPredictions: number;
+  pending: number;
+  verified: number;
+  wins: number;
+  losses: number;
   top3Hits: number;
-  hitRate: number;
-  top3HitRate: number;
+  winRate: number;
+  top3Rate: number;
+  currentStreak: number;
   perStrategy: {
     strategy: string;
     total: number;
-    resolved: number;
-    hits: number;
-    top3Hits: number;
-    hitRate: number;
-    top3HitRate: number;
+    verified: number;
+    wins: number;
+    losses: number;
+    winRate: number;
+    top3Rate: number;
   }[];
-  recent: {
-    id: string;
+  recentVerifications: {
+    predictionId: string;
     strategy: string;
-    predictedSector: string;
     predictedLabel: string;
-    confidence: number;
     actualSector: string | null;
-    isHit: boolean | null;
+    status: "PENDING" | "WIN" | "LOSS";
     isTop3Hit: boolean | null;
     predictedAt: string;
-    resolvedAt: string | null;
+    verifiedAt: string | null;
+    sourceSpinId: string;
   }[];
 }
 
 export interface PredictResponse {
+  dataReady?: boolean;
+  status?: string;
+  message?: string;
   signals: {
     momentum: NextSpinSignal;
     hotTrend: NextSpinSignal;
@@ -65,6 +70,8 @@ export interface PredictResponse {
   }[];
   predictionSummary?: NormalizedPrediction;
   accuracy?: AccuracyStats | null;
+  adaptiveWeights?: string;
+  verificationResult?: { verified: number; wins: number; losses: number; top3Hits: number };
   lastActualSpin?: {
     sector: string | null;
     sectorLabel: string | null;
@@ -277,9 +284,14 @@ export function useCrazyTimePredict() {
   }, [fetchNow]);
 
   return {
+    dataReady: data?.dataReady ?? false,
+    status: data?.status ?? null,
+    statusMessage: data?.message ?? null,
     signals: data?.signals ?? null,
     ranked: data?.ranked ?? [],
     accuracy: data?.accuracy ?? null,
+    adaptiveWeights: data?.adaptiveWeights ?? null,
+    verificationResult: data?.verificationResult ?? null,
     lastActualSpin: data?.lastActualSpin ?? null,
     recentSpinsCount: data?.recentSpinsCount ?? 0,
     totalSpins: data?.totalSpins ?? 0,

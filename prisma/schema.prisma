@@ -32,7 +32,9 @@ model Post {
 // This is the REAL accuracy tracker - no fake numbers.
 model PredictionRecord {
   id              String   @id @default(cuid())
-  // Which strategy produced this prediction
+  // Unique prediction identifier (deterministic from source spin + strategy)
+  predictionId    String   @unique
+  // Which strategy produced this prediction (momentum, hot_trend, overdue_bonus)
   strategy        String
   // The sector we predicted (raw key, e.g. "1", "Pachinko")
   predictedSector String
@@ -40,23 +42,33 @@ model PredictionRecord {
   predictedLabel  String
   // Top-3 predicted sectors at the time (JSON array of raw keys)
   topSectors      String
-  // Confidence shown to the user (0-100)
+  // Confidence shown to the user (0-100) — calculated from evidence
   confidence      Int
+  // Model score (the raw ensemble score, not clamped)
+  modelScore      Float
   // Real observed hit rate at prediction time (%)
   observedHitRate  Float
   // When the prediction was made
   predictedAt     DateTime @default(now())
-  // The actual next spin's sector (filled in when the next spin resolves)
+  // The source spin that was used to generate this prediction
+  sourceSpinId    String
+  // The timestamp of the source spin
+  sourceSpinTimestamp String
+  // Status: PENDING, WIN, or LOSS
+  status          String   @default("PENDING")
+  // The actual next spin's sector (filled in when verified)
   actualSector    String?
   // The actual next spin's event id from the upstream API
   actualEventId   String?
   // When the actual result was recorded
-  resolvedAt      DateTime?
+  verifiedAt      DateTime?
   // Whether the prediction was correct (actualSector === predictedSector)
   isHit           Boolean?
   // Whether the prediction was in the top-3 (partial credit)
   isTop3Hit       Boolean?
 
   @@index([strategy, predictedAt])
-  @@index([resolvedAt])
+  @@index([verifiedAt])
+  @@index([status])
+  @@index([sourceSpinId])
 }

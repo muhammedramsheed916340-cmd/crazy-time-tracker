@@ -1,36 +1,42 @@
 import { NextRequest, NextResponse } from "next/server";
 import { fetchCrazyTimeEvents, fetchCrazyTimeStats } from "@/lib/crazytime/upstream";
-import { normalizeSpins, normalizeStats, buildMultiPrediction, buildPrediction } from "@/lib/crazytime/adapter";
+import { normalizeSpins, normalizeStats, label, cardImage } from "@/lib/crazytime/adapter";
 import {
   DEFAULT_DURATION_HOURS,
-  DEFAULT_SIZE,
   DEFAULT_SORT,
   DEFAULT_TOPSLOT_MATCHED_FILTER,
   DEFAULT_WHEEL_RESULTS_FILTER,
   CRAZY_TIME_TABLE_ID,
 } from "@/lib/crazytime/constants";
-import type { NextSpinSignal, NormalizedPrediction } from "@/lib/crazytime/types";
 import {
-  recordPrediction,
-  resolvePendingPredictions,
-  getAccuracyStats,
-} from "@/lib/crazytime/tracker";
+  validateAndNormalizeSpins,
+  analyzeAllWindows,
+  computeAdaptiveWeightsFromWalkForward,
+  scoreCandidates,
+  computeConfidence,
+  recordPredictionToDB,
+  verifyPendingPredictions,
+  getAccuracyFromDB,
+} from "@/lib/crazytime/prediction-engine";
+import type { NormalizedStats } from "@/lib/crazytime/types";
 
 export const dynamic = "force-dynamic";
 export const revalidate = 0;
 
-// In-memory session counter (per server instance).
-let sessionPredictionCount = 0;
+// Throttle DB operations: only verify + record once every 30 seconds
+// to prevent memory accumulation from rapid API calls.
+let lastDbOpTime = 0;
+const DB_OP_THROTTLE_MS = 30000;
 
 export async function GET(req: NextRequest) {
   const sp = req.nextUrl.searchParams;
   const durationHours = Number(sp.get("duration") ?? DEFAULT_DURATION_HOURS);
-  // Fetch 200 spins for Markov transition data. 200 is a good balance of
-  // pattern accuracy vs server memory/performance. (300 was causing OOM crashes.)
   const size = Number(sp.get("size") ?? 200);
+  const now = Date.now();
+  const canDoDbOps = now - lastDbOpTime > DB_OP_THROTTLE_MS;
 
   try {
-    // Fetch real stats and a large window of real recent spins in parallel.
+    // Fetch real stats and recent spins in parallel
     const [statsRaw, eventsRes] = await Promise.all([
       fetchCrazyTimeStats(
         Number.isFinite(durationHours) ? durationHours : DEFAULT_DURATION_HOURS,
@@ -49,62 +55,225 @@ export async function GET(req: NextRequest) {
     ]);
 
     const stats = normalizeStats(statsRaw);
-    const spins = normalizeSpins(eventsRes.items);
-    sessionPredictionCount += 1;
+    const rawSpins = normalizeSpins(eventsRes.items);
 
-    const multi = buildMultiPrediction(stats, spins, sessionPredictionCount);
-    const predictionSummary: NormalizedPrediction = buildPrediction(stats);
+    // ===== 1. VALIDATE SPINS =====
+    const validatedSpins = validateAndNormalizeSpins(rawSpins);
 
-    // Prediction tracking (DB) — disabled temporarily to fix server stability.
-    // The prediction itself doesn't need DB; it's only for the accuracy tracker.
-    // TODO: re-enable with a proper queue/background worker.
-    const accuracy = null;
+    // ===== 2. DATA QUALITY CHECK =====
+    const dataReady = validatedSpins.length >= 20;
+    const latestSpin = validatedSpins[validatedSpins.length - 1] ?? null;
+    const isStale = !latestSpin || (Date.now() - new Date(latestSpin.timestamp).getTime() > 10 * 60 * 1000);
 
-    // The actual most recent real spin, so the UI can show it next to predictions
-    const lastActualSpin = spins[0] ?? null;
+    // ===== 3. VERIFY PENDING PREDICTIONS (throttled, non-blocking) =====
+    let verificationResult = { verified: 0, wins: 0, losses: 0, top3Hits: 0 };
+    if (canDoDbOps) {
+      lastDbOpTime = now;
+      void (async () => {
+        try {
+          await verifyPendingPredictions(validatedSpins);
+        } catch (err) {
+          console.error("[predict] verification error:", err);
+        }
+      })();
+    }
 
-    return NextResponse.json(
-      {
-        signals: {
-          momentum: multi.momentum,
-          hotTrend: multi.hotTrend,
-          overdueBonus: multi.overdueBonus,
-        } as Record<string, NextSpinSignal>,
-        ranked: multi.ranked,
-        predictionSummary,
+    // ===== 4. GET ACCURACY FROM DB (with timeout protection) =====
+    let accuracy = null;
+    try {
+      accuracy = await getAccuracyFromDB();
+    } catch (err) {
+      console.error("[predict] accuracy fetch error:", err);
+    }
+
+    // ===== 5. DATA NOT READY — return empty with clear status =====
+    if (!dataReady || isStale) {
+      return NextResponse.json({
+        dataReady: false,
+        status: isStale ? "STALE_DATA" : "INSUFFICIENT_DATA",
+        message: isStale
+          ? "Live data feed is stale. Predictions are paused until fresh data arrives."
+          : `Only ${validatedSpins.length} spins available. Need at least 20 to generate predictions.`,
+        signals: null,
+        ranked: [],
         accuracy,
-        lastActualSpin: lastActualSpin
+        lastActualSpin: latestSpin
           ? {
-              sector: lastActualSpin.wheelResultSector,
-              sectorLabel: lastActualSpin.sectorLabel ?? lastActualSpin.wheelResultSector,
-              settledAt: lastActualSpin.settledAt,
-              topSlotSector: lastActualSpin.topSlotSector,
-              maxMultiplier: lastActualSpin.maxMultiplier,
-              isBonus: lastActualSpin.bonusType != null,
+              sector: latestSpin.result,
+              sectorLabel: label(latestSpin.result),
+              settledAt: latestSpin.timestamp,
             }
           : null,
-        recentSpinsCount: spins.length,
+        recentSpinsCount: validatedSpins.length,
         totalSpins: eventsRes.totalCount,
         fetchedAt: new Date().toISOString(),
-      },
-      {
+      }, {
         headers: {
           "Cache-Control": "no-store, no-cache, must-revalidate",
           "Access-Control-Allow-Origin": "*",
         },
-      }
-    );
+      });
+    }
+
+    // ===== 6. MULTI-WINDOW ANALYSIS =====
+    const analysis = analyzeAllWindows(validatedSpins);
+
+    // ===== 7. ADAPTIVE WEIGHTS (walk-forward validation) =====
+    const validatedWinRate = accuracy && accuracy.verified > 0 ? accuracy.winRate : null;
+    const adaptiveWeights = computeAdaptiveWeightsFromWalkForward(validatedSpins);
+
+    // ===== 8. SCORE CANDIDATES =====
+    const lastSpinResult = latestSpin?.result ?? null;
+    const candidates = scoreCandidates(analysis, adaptiveWeights, lastSpinResult);
+
+    // ===== 9. GENERATE 3 SIGNALS (top-3 candidates) =====
+    const top3 = candidates.slice(0, 3);
+
+    const signals = top3.map((cand, idx) => {
+      const confidence = computeConfidence(
+        cand,
+        candidates[idx + 1],
+        validatedSpins.length,
+        validatedWinRate
+      );
+
+      return {
+        sector: cand.sector,
+        sectorLabel: label(cand.sector),
+        cardImage: cardImage(cand.sector),
+        confidence,
+        modelScore: Math.round(cand.totalScore * 100) / 100,
+        signals: [
+          {
+            label: `Frequency evidence (${analysis.recent.windowName} window)`,
+            detail: `${cand.evidence.frequencyScore.toFixed(1)}% recent frequency (blended with long-term)`,
+            weight: cand.weights.frequency,
+          },
+          {
+            label: `Recency evidence`,
+            detail: `${cand.evidence.recencyScore.toFixed(1)}% — last appeared ${analysis.recent.sectorStats[cand.sector]?.recency ?? 0} spins ago`,
+            weight: cand.weights.recency,
+          },
+          {
+            label: `Transition evidence (Markov after ${label(lastSpinResult)})`,
+            detail: `${cand.evidence.transitionScore.toFixed(1)}% probability — historically comes after "${label(lastSpinResult)}"`,
+            weight: cand.weights.transition,
+          },
+          {
+            label: `Interval evidence (overdue)`,
+            detail: `${cand.evidence.intervalScore.toFixed(1)}% — avg interval ${analysis.short.sectorStats[cand.sector]?.avgInterval.toFixed(1) ?? "—"} spins`,
+            weight: cand.weights.interval,
+          },
+          {
+            label: `Distribution evidence`,
+            detail: `${cand.evidence.distributionScore.toFixed(1)}% long-term base frequency`,
+            weight: cand.weights.distribution,
+          },
+          {
+            label: `Momentum evidence`,
+            detail: `${cand.evidence.momentumScore.toFixed(1)}% — momentum delta ${analysis.recent.sectorStats[cand.sector]?.momentumDelta.toFixed(2) ?? "0"}%`,
+            weight: cand.weights.momentum,
+          },
+        ],
+        isBonus: cand.isBonus,
+        observedPercentage: analysis.long.sectorStats[cand.sector]?.frequency ?? 0,
+        observedCount: stats.aggStats.find((s) => s.wheelResult === cand.sector)?.count ?? 0,
+        observedLastSeenBefore: analysis.recent.sectorStats[cand.sector]?.recency ?? null,
+        observedHotFrequencyPercentage: stats.aggStats.find((s) => s.wheelResult === cand.sector)?.hotFrequencyPercentage ?? null,
+        generatedAt: new Date().toISOString(),
+        sessionTotal: 0,
+        modelAccuracy: accuracy && accuracy.verified > 0 ? accuracy.top3Rate : null,
+        strategy: idx === 0 ? "momentum" : idx === 1 ? "hot_trend" : "overdue_bonus",
+        strategyTitle: idx === 0 ? "Signal #1 (Top Pick)" : idx === 1 ? "Signal #2 (2nd Pick)" : "Signal #3 (3rd Pick)",
+        observed: {
+          recentHits: analysis.recent.sectorStats[cand.sector]?.count ?? 0,
+          recentWindow: analysis.recent.totalSpins,
+          recentPercentage: analysis.recent.sectorStats[cand.sector]?.frequency ?? 0,
+          momentumDelta: analysis.recent.sectorStats[cand.sector]?.momentumDelta ?? 0,
+        },
+      };
+    });
+
+    // ===== 10. RECORD PREDICTIONS TO DB (throttled, non-blocking) =====
+    if (latestSpin && canDoDbOps) {
+      const topSectors = top3.map((c) => c.sector);
+      void (async () => {
+        for (let i = 0; i < signals.length; i++) {
+          const sig = signals[i];
+          const strategy = i === 0 ? "momentum" : i === 1 ? "hot_trend" : "overdue_bonus";
+          try {
+            await recordPredictionToDB({
+              predictionId: `pred_${latestSpin.spinId}_${strategy}`,
+              strategy,
+              predictedSector: sig.sector,
+              predictedLabel: sig.sectorLabel,
+              topSectors,
+              confidence: sig.confidence,
+              modelScore: sig.modelScore,
+              observedHitRate: sig.observedPercentage,
+              sourceSpinId: latestSpin.spinId,
+              sourceSpinTimestamp: latestSpin.timestamp,
+              status: "PENDING",
+            });
+          } catch (err) {
+            console.error("[predict] recordPredictionToDB error:", err);
+          }
+        }
+      })();
+    }
+
+    // ===== 11. RETURN RESPONSE =====
+    return NextResponse.json({
+      dataReady: true,
+      status: "READY",
+      signals: {
+        momentum: signals[0] ?? null,
+        hotTrend: signals[1] ?? null,
+        overdueBonus: signals[2] ?? null,
+      },
+      ranked: candidates.slice(0, 8).map((c) => ({
+        sector: c.sector,
+        sectorLabel: label(c.sector),
+        score: c.totalScore,
+        percentage: analysis.long.sectorStats[c.sector]?.frequency ?? 0,
+        hotFrequencyPercentage: stats.aggStats.find((s) => s.wheelResult === c.sector)?.hotFrequencyPercentage ?? null,
+        lastSeenBefore: analysis.recent.sectorStats[c.sector]?.recency ?? null,
+        isBonus: c.isBonus,
+      })),
+      predictionSummary: null,
+      accuracy,
+      adaptiveWeights: adaptiveWeights.info,
+      verificationResult,
+      lastActualSpin: latestSpin
+        ? {
+            sector: latestSpin.result,
+            sectorLabel: label(latestSpin.result),
+            settledAt: latestSpin.timestamp,
+            topSlotSector: latestSpin.raw.topSlotSector,
+            maxMultiplier: latestSpin.raw.maxMultiplier,
+            isBonus: latestSpin.raw.bonusType != null,
+          }
+        : null,
+      recentSpinsCount: validatedSpins.length,
+      totalSpins: eventsRes.totalCount,
+      fetchedAt: new Date().toISOString(),
+    }, {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+        "Access-Control-Allow-Origin": "*",
+      },
+    });
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Unknown error";
-    return NextResponse.json(
-      {
-        error: msg,
-        signals: null,
-        ranked: [],
-        accuracy: null,
-        fetchedAt: new Date().toISOString(),
-      },
-      { status: 200, headers: { "Cache-Control": "no-store" } }
-    );
+    return NextResponse.json({
+      dataReady: false,
+      status: "ERROR",
+      message: "Prediction temporarily unavailable",
+      error: msg,
+      signals: null,
+      ranked: [],
+      accuracy: null,
+      fetchedAt: new Date().toISOString(),
+    }, { status: 200, headers: { "Cache-Control": "no-store" } });
   }
 }
