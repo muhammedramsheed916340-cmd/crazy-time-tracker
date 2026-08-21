@@ -214,16 +214,22 @@ export async function GET(req: NextRequest) {
     // Sort by total score (highest first)
     dynamicScores.sort((a, b) => b.totalScore - a.totalScore);
 
-    // ===== SELECT TOP-3 — STRICT UNIQUENESS GUARANTEED =====
-    // The three prediction boxes MUST always contain three UNIQUE sectors.
-    // Signal 1 = highest score
-    // Signal 2 = highest score ≠ Signal 1
-    // Signal 3 = highest score ≠ Signal 1 AND ≠ Signal 2
-    // Then apply diversity: if all 3 are numbers, swap #3 for best bonus.
-    const sortedSectors = dynamicScores.map(s => s.sector);
+    // ===== SELECT TOP-3 — STRICT UNIQUENESS + ANTI-REPEAT =====
+    // Rules:
+    // 1. Three prediction boxes MUST contain three UNIQUE sectors (no duplicates)
+    // 2. NEVER predict the same sector as the last actual spin (anti-repeat)
+    //    — repeats only happen ~22% of the time, so predicting a DIFFERENT
+    //      sector is statistically correct ~78% of the time
+    // 3. Signal 1 = highest score (excluding last spin)
+    // 4. Signal 2 = highest score ≠ Signal 1 (and ≠ last spin)
+    // 5. Signal 3 = diversity pick ≠ Signal 1 & 2 (and ≠ last spin)
+    const lastSpinSector = latestSpin?.result ?? null;
+    const sortedSectors = dynamicScores
+      .filter(s => s.sector !== lastSpinSector) // EXCLUDE last actual spin
+      .map(s => s.sector);
     const top3Sectors: string[] = [];
 
-    // Signal 1: highest-scoring sector
+    // Signal 1: highest-scoring sector (excluding last spin)
     if (sortedSectors[0]) top3Sectors.push(sortedSectors[0]);
 
     // Signal 2: highest-scoring sector NOT in top3Sectors
@@ -259,11 +265,11 @@ export async function GET(req: NextRequest) {
     }
     if (thirdPick) top3Sectors.push(thirdPick);
 
-    // FINAL GUARANTEE: remove any duplicates (shouldn't happen, but just in case)
-    const uniqueTop3 = [...new Set(top3Sectors)];
-    // If we lost one due to dedup, fill from remaining sorted sectors
+    // FINAL GUARANTEE: remove any duplicates + ensure none equals last spin
+    const uniqueTop3 = [...new Set(top3Sectors)].filter(s => s !== lastSpinSector);
+    // If we lost entries due to dedup/anti-repeat, fill from remaining sectors
     while (uniqueTop3.length < 3 && uniqueTop3.length < sortedSectors.length) {
-      const next = sortedSectors.find(s => !uniqueTop3.includes(s));
+      const next = sortedSectors.find(s => !uniqueTop3.includes(s) && s !== lastSpinSector);
       if (next) uniqueTop3.push(next);
       else break;
     }
@@ -271,7 +277,7 @@ export async function GET(req: NextRequest) {
     top3Sectors.length = 0;
     top3Sectors.push(...uniqueTop3);
 
-    console.log(`[predict] Top-3 selected: ${top3Sectors.map(s => label(s)).join(", ")} (unique: ${new Set(top3Sectors).size === top3Sectors.length})`);
+    console.log(`[predict] Last spin: ${label(lastSpinSector)} | Top-3: ${top3Sectors.map(s => label(s)).join(", ")} | Unique: ${new Set(top3Sectors).size === top3Sectors.length} | Anti-repeat: ${!top3Sectors.includes(lastSpinSector ?? "")}`);
 
     // Keep for evidence display
     const candidates = scoreCandidates(analysis, adaptiveWeights, lastSpinResult);
