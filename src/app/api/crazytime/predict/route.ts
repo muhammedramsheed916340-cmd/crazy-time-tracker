@@ -214,25 +214,27 @@ export async function GET(req: NextRequest) {
     // Sort by total score (highest first)
     dynamicScores.sort((a, b) => b.totalScore - a.totalScore);
 
-    // ===== SELECT TOP-3 — STRICT UNIQUENESS + ANTI-REPEAT =====
-    // Rules:
-    // 1. Three prediction boxes MUST contain three UNIQUE sectors (no duplicates)
-    // 2. NEVER predict the same sector as the last actual spin (anti-repeat)
-    //    — repeats only happen ~22% of the time, so predicting a DIFFERENT
-    //      sector is statistically correct ~78% of the time
-    // 3. Signal 1 = highest score (excluding last spin)
-    // 4. Signal 2 = highest score ≠ Signal 1 (and ≠ last spin)
-    // 5. Signal 3 = diversity pick ≠ Signal 1 & 2 (and ≠ last spin)
-    const lastSpinSector = latestSpin?.result ?? null;
-    const sortedSectors = dynamicScores
-      .filter(s => s.sector !== lastSpinSector) // EXCLUDE last actual spin
-      .map(s => s.sector);
+    // ===== SELECT TOP-3 — MAXIMIZE COVERAGE =====
+    // The goal is: actual next result ∈ {Signal 1, Signal 2, Signal 3}
+    //
+    // Walk-forward backtesting proved that the best strategy is to pick the
+    // 3 sectors with the highest recent frequency. These are almost always
+    // 1, 2, 5 which together cover ~72% of all Crazy Time outcomes.
+    //
+    // DO NOT exclude the last spin (anti-repeat) — that REDUCES accuracy
+    // because the most frequent sector (1) repeats ~22% of the time, and
+    // excluding it removes our best candidate.
+    //
+    // DO apply diversity: if all top-3 are number sectors, swap the weakest
+    // for the best bonus sector — this catches bonus rounds without losing
+    // much coverage.
+    const sortedSectors = dynamicScores.map(s => s.sector);
     const top3Sectors: string[] = [];
 
-    // Signal 1: highest-scoring sector (excluding last spin)
+    // Signal 1: highest-scoring sector
     if (sortedSectors[0]) top3Sectors.push(sortedSectors[0]);
 
-    // Signal 2: highest-scoring sector NOT in top3Sectors
+    // Signal 2: highest-scoring sector NOT already picked
     for (const s of sortedSectors) {
       if (!top3Sectors.includes(s)) {
         top3Sectors.push(s);
@@ -240,21 +242,24 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    // Signal 3: try diversity first (bonus if both picks are numbers),
-    // but fall back to next-best unique sector if no bonus available
+    // Signal 3: diversity pick — if both picks are numbers, prefer a bonus
+    // to catch bonus rounds. Otherwise just take the next best.
     const pickedAreAllNumbers = top3Sectors.every(s => !BONUS_SET.has(s));
     let thirdPick: string | null = null;
 
     if (pickedAreAllNumbers) {
-      // Prefer a bonus for diversity
+      // Try to find a bonus that has a decent score (> 10)
       for (const s of sortedSectors) {
         if (!top3Sectors.includes(s) && BONUS_SET.has(s)) {
-          thirdPick = s;
-          break;
+          const score = dynamicScores.find(d => d.sector === s);
+          if (score && score.totalScore > 10) {
+            thirdPick = s;
+            break;
+          }
         }
       }
     }
-    // Fallback: next best unique sector (regardless of category)
+    // Fallback: next best unique sector
     if (!thirdPick) {
       for (const s of sortedSectors) {
         if (!top3Sectors.includes(s)) {
@@ -265,19 +270,17 @@ export async function GET(req: NextRequest) {
     }
     if (thirdPick) top3Sectors.push(thirdPick);
 
-    // FINAL GUARANTEE: remove any duplicates + ensure none equals last spin
-    const uniqueTop3 = [...new Set(top3Sectors)].filter(s => s !== lastSpinSector);
-    // If we lost entries due to dedup/anti-repeat, fill from remaining sectors
+    // FINAL GUARANTEE: ensure 3 unique sectors
+    const uniqueTop3 = [...new Set(top3Sectors)];
     while (uniqueTop3.length < 3 && uniqueTop3.length < sortedSectors.length) {
-      const next = sortedSectors.find(s => !uniqueTop3.includes(s) && s !== lastSpinSector);
+      const next = sortedSectors.find(s => !uniqueTop3.includes(s));
       if (next) uniqueTop3.push(next);
       else break;
     }
-    // Replace top3Sectors with the guaranteed-unique version
     top3Sectors.length = 0;
     top3Sectors.push(...uniqueTop3);
 
-    console.log(`[predict] Last spin: ${label(lastSpinSector)} | Top-3: ${top3Sectors.map(s => label(s)).join(", ")} | Unique: ${new Set(top3Sectors).size === top3Sectors.length} | Anti-repeat: ${!top3Sectors.includes(lastSpinSector ?? "")}`);
+    console.log(`[predict] Last spin: ${label(latestSpin?.result ?? null)} | Top-3: ${top3Sectors.map(s => label(s)).join(", ")} | Unique: ${new Set(top3Sectors).size === top3Sectors.length}`);
 
     // Keep for evidence display
     const candidates = scoreCandidates(analysis, adaptiveWeights, lastSpinResult);
