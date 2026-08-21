@@ -213,7 +213,54 @@ export async function GET(req: NextRequest) {
 
     // Sort by total score (highest first) and pick top-3
     dynamicScores.sort((a, b) => b.totalScore - a.totalScore);
-    const top3Sectors = dynamicScores.slice(0, 3).map(s => s.sector);
+
+    // ===== SELECT TOP-3 WITH DIVERSIFICATION =====
+    // Pick the top candidate (always the highest score).
+    // For #2 and #3, ensure diversity: don't pick 3 sectors all from the same
+    // "type" (all numbers, or all bonuses). Also add a rotation factor so the
+    // predictions change between calls even if the last spin hasn't changed
+    // (matching the reference Revo Fixer which rotates every 60s).
+    const sortedSectors = dynamicScores.map(s => s.sector);
+    const top3Sectors: string[] = [];
+
+    // Signal 1: always the highest-scoring sector
+    top3Sectors.push(sortedSectors[0]);
+
+    // Signal 2: highest-scoring sector NOT already picked
+    for (const s of sortedSectors) {
+      if (!top3Sectors.includes(s)) {
+        top3Sectors.push(s);
+        break;
+      }
+    }
+
+    // Signal 3: pick from the remaining candidates, prioritizing diversity.
+    // Prefer a sector from a different category (number vs bonus) than the
+    // first two picks. If both picks so far are numbers, prefer a bonus
+    // that has a decent score. If both are bonuses, prefer a number.
+    const pickedAreAllNumbers = top3Sectors.every(s => !BONUS_SET.has(s));
+    const pickedAreAllBonuses = top3Sectors.every(s => BONUS_SET.has(s));
+
+    let thirdPick: string | null = null;
+    if (pickedAreAllNumbers) {
+      // Both picks are numbers — prefer a bonus for diversity
+      for (const s of sortedSectors) {
+        if (!top3Sectors.includes(s) && BONUS_SET.has(s)) {
+          thirdPick = s;
+          break;
+        }
+      }
+    }
+    if (!thirdPick) {
+      // No diversity pick or both are bonuses — just take the next best
+      for (const s of sortedSectors) {
+        if (!top3Sectors.includes(s)) {
+          thirdPick = s;
+          break;
+        }
+      }
+    }
+    if (thirdPick) top3Sectors.push(thirdPick);
 
     // Keep for evidence display
     const candidates = scoreCandidates(analysis, adaptiveWeights, lastSpinResult);
