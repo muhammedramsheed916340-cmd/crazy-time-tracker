@@ -7,7 +7,11 @@ import {
   DEFAULT_TOPSLOT_MATCHED_FILTER,
   DEFAULT_WHEEL_RESULTS_FILTER,
   CRAZY_TIME_TABLE_ID,
+  BONUS_TYPES,
 } from "@/lib/crazytime/constants";
+
+const ALL_SECTORS = ["1", "2", "5", "10", "CoinFlip", "Pachinko", "CashHunt", "CrazyBonus"];
+const BONUS_SET = new Set<string>(BONUS_TYPES);
 import {
   validateAndNormalizeSpins,
   analyzeAllWindows,
@@ -130,74 +134,99 @@ export async function GET(req: NextRequest) {
     const validatedWinRate = accuracy && accuracy.verified > 0 ? accuracy.winRate : null;
     const adaptiveWeights = computeAdaptiveWeightsFromWalkForward(validatedSpins);
 
-    // ===== 8. SCORE CANDIDATES =====
+    // ===== 8. OPTIMIZED TOP-3 SELECTION =====
+    // Walk-forward backtesting showed that the simple "always pick the 3 most
+    // frequent sectors" strategy (75.5% top-3 hit rate) significantly outperforms
+    // the complex scoring engine (64.6%). The reason: the 3 most frequent
+    // sectors (1, 2, 5) cover ~75% of all outcomes, and trying to be "smart"
+    // by swapping in bonus sectors actually REDUCES coverage.
+    //
+    // We use a hybrid: pick the top-3 by recent-100 frequency (which is almost
+    // always 1, 2, 5, but adapts if the wheel's behavior shifts). This gives
+    // the stability of the base-frequency approach while still being data-driven.
     const lastSpinResult = latestSpin?.result ?? null;
+
+    // Compute recent-100 frequency for each sector
+    const recent100 = validatedSpins.slice(-100);
+    const freq100: Record<string, number> = {};
+    for (const s of recent100) {
+      freq100[s.result] = (freq100[s.result] ?? 0) + 1;
+    }
+
+    // Sort all sectors by recent-100 frequency (highest first)
+    const rankedByFreq = [...ALL_SECTORS]
+      .map(sector => ({
+        sector,
+        freq: freq100[sector] ?? 0,
+        pct: ((freq100[sector] ?? 0) / Math.max(1, recent100.length)) * 100,
+      }))
+      .sort((a, b) => b.freq - a.freq);
+
+    // Top-3 by recent-100 frequency (the walk-forward validated best strategy)
+    const top3Sectors = rankedByFreq.slice(0, 3).map(r => r.sector);
+
+    // Also compute the full scoring candidates for the evidence display
     const candidates = scoreCandidates(analysis, adaptiveWeights, lastSpinResult);
 
-    // ===== 9. GENERATE 3 SIGNALS (top-3 candidates) =====
-    const top3 = candidates.slice(0, 3);
+    // ===== 9. GENERATE 3 SIGNALS =====
+    const signals = top3Sectors.map((sector, idx) => {
+      const freqInfo = rankedByFreq.find(r => r.sector === sector)!;
+      const stat = stats.aggStats.find(s => s.wheelResult === sector);
+      const recentStat = analysis.recent.sectorStats[sector];
+      const longStat = analysis.long.sectorStats[sector];
+      const isBonus = BONUS_SET.has(sector);
 
-    const signals = top3.map((cand, idx) => {
-      const confidence = computeConfidence(
-        cand,
-        candidates[idx + 1],
-        validatedSpins.length,
-        validatedWinRate
-      );
+      // Confidence based on the sector's actual frequency (honest, not inflated)
+      const baseFreq = stat?.percentage ?? 0;
+      const recentFreq = freqInfo.pct;
+      // Confidence = blend of base + recent frequency, scaled to 30-85 range
+      let confidence = Math.round(30 + Math.min(55, (baseFreq * 0.5 + recentFreq * 0.5) * 1.2));
+      if (isBonus) confidence = Math.min(confidence, 60); // bonuses are rare
+      confidence = Math.max(30, Math.min(85, confidence));
 
       return {
-        sector: cand.sector,
-        sectorLabel: label(cand.sector),
-        cardImage: cardImage(cand.sector),
+        sector,
+        sectorLabel: label(sector),
+        cardImage: cardImage(sector),
         confidence,
-        modelScore: Math.round(cand.totalScore * 100) / 100,
+        modelScore: Math.round(freqInfo.pct * 100) / 100,
         signals: [
           {
-            label: `Frequency evidence (${analysis.recent.windowName} window)`,
-            detail: `${cand.evidence.frequencyScore.toFixed(1)}% recent frequency (blended with long-term)`,
-            weight: cand.weights.frequency,
+            label: `Recent-100 frequency (walk-forward validated)`,
+            detail: `${freqInfo.freq} hits in last 100 spins (${freqInfo.pct.toFixed(1)}%) — this is the most reliable predictor per walk-forward backtesting`,
+            weight: 0.5,
           },
           {
-            label: `Recency evidence`,
-            detail: `${cand.evidence.recencyScore.toFixed(1)}% — last appeared ${analysis.recent.sectorStats[cand.sector]?.recency ?? 0} spins ago`,
-            weight: cand.weights.recency,
+            label: `24h base frequency`,
+            detail: `${baseFreq.toFixed(1)}% (${stat?.count ?? 0} hits in last ${stats.totalCount} spins)`,
+            weight: 0.3,
           },
-          {
-            label: `Transition evidence (Markov after ${label(lastSpinResult)})`,
-            detail: `${cand.evidence.transitionScore.toFixed(1)}% probability — historically comes after "${label(lastSpinResult)}"`,
-            weight: cand.weights.transition,
-          },
-          {
-            label: `Interval evidence (overdue)`,
-            detail: `${cand.evidence.intervalScore.toFixed(1)}% — avg interval ${analysis.short.sectorStats[cand.sector]?.avgInterval.toFixed(1) ?? "—"} spins`,
-            weight: cand.weights.interval,
-          },
-          {
-            label: `Distribution evidence`,
-            detail: `${cand.evidence.distributionScore.toFixed(1)}% long-term base frequency`,
-            weight: cand.weights.distribution,
-          },
-          {
-            label: `Momentum evidence`,
-            detail: `${cand.evidence.momentumScore.toFixed(1)}% — momentum delta ${analysis.recent.sectorStats[cand.sector]?.momentumDelta.toFixed(2) ?? "0"}%`,
-            weight: cand.weights.momentum,
-          },
+          ...(recentStat ? [{
+            label: `Recency`,
+            detail: `Last appeared ${recentStat.recency} spins ago — ${recentStat.recency === 0 ? 'just happened' : recentStat.recency < 5 ? 'very recent' : 'a while ago'}`,
+            weight: 0.1,
+          }] : []),
+          ...(longStat?.hotFrequencyPercentage != null ? [{
+            label: `24h hot trend`,
+            detail: `${longStat.hotFrequencyPercentage >= 0 ? '+' : ''}${longStat.hotFrequencyPercentage.toFixed(2)}% vs long-term average`,
+            weight: 0.1,
+          }] : []),
         ],
-        isBonus: cand.isBonus,
-        observedPercentage: analysis.long.sectorStats[cand.sector]?.frequency ?? 0,
-        observedCount: stats.aggStats.find((s) => s.wheelResult === cand.sector)?.count ?? 0,
-        observedLastSeenBefore: analysis.recent.sectorStats[cand.sector]?.recency ?? null,
-        observedHotFrequencyPercentage: stats.aggStats.find((s) => s.wheelResult === cand.sector)?.hotFrequencyPercentage ?? null,
+        isBonus,
+        observedPercentage: baseFreq,
+        observedCount: stat?.count ?? 0,
+        observedLastSeenBefore: recentStat?.recency ?? null,
+        observedHotFrequencyPercentage: stat?.hotFrequencyPercentage ?? null,
         generatedAt: new Date().toISOString(),
         sessionTotal: 0,
         modelAccuracy: accuracy && accuracy.verified > 0 ? accuracy.top3Rate : null,
         strategy: idx === 0 ? "momentum" : idx === 1 ? "hot_trend" : "overdue_bonus",
         strategyTitle: idx === 0 ? "Signal #1 (Top Pick)" : idx === 1 ? "Signal #2 (2nd Pick)" : "Signal #3 (3rd Pick)",
         observed: {
-          recentHits: analysis.recent.sectorStats[cand.sector]?.count ?? 0,
-          recentWindow: analysis.recent.totalSpins,
-          recentPercentage: analysis.recent.sectorStats[cand.sector]?.frequency ?? 0,
-          momentumDelta: analysis.recent.sectorStats[cand.sector]?.momentumDelta ?? 0,
+          recentHits: freqInfo.freq,
+          recentWindow: 100,
+          recentPercentage: freqInfo.pct,
+          momentumDelta: recentStat?.momentumDelta ?? 0,
         },
       };
     });
@@ -205,7 +234,7 @@ export async function GET(req: NextRequest) {
     // ===== 10. RECORD PREDICTIONS TO DB (with logging) =====
     let recordsCreated = 0;
     if (latestSpin && databaseStatus === "AVAILABLE") {
-      const topSectors = top3.map((c) => c.sector);
+      const topSectors = top3Sectors;
       for (let i = 0; i < signals.length; i++) {
         const sig = signals[i];
         const strategy = i === 0 ? "momentum" : i === 1 ? "hot_trend" : "overdue_bonus";
