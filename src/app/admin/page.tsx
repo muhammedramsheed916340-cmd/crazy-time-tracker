@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Key, Gamepad2, Trash2, Copy, Check, RefreshCw, ArrowLeft, Eye } from "lucide-react";
+import { Key, Gamepad2, Trash2, Copy, Check, RefreshCw, ArrowLeft, Eye, ShieldCheck, XCircle } from "lucide-react";
 
 interface KeyRecord {
   id: string;
@@ -24,6 +24,9 @@ export default function AdminPage() {
   const [label, setLabel] = useState("");
   const [count, setCount] = useState(1);
   const [copied, setCopied] = useState<string | null>(null);
+  const [verifyInput, setVerifyInput] = useState("");
+  const [verifyResult, setVerifyResult] = useState<{ valid: boolean; message: string; type?: string } | null>(null);
+  const [verifying, setVerifying] = useState(false);
 
   const fetchKeys = useCallback(async () => {
     setLoading(true);
@@ -87,6 +90,39 @@ export default function AdminPage() {
       setTimeout(() => setCopied(null), 2000);
     } catch {
       // ignore
+    }
+  };
+
+  const verifyKey = async () => {
+    if (!verifyInput.trim()) return;
+    setVerifying(true);
+    setVerifyResult(null);
+    try {
+      const res = await fetch("/api/admin/verify-key", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: verifyInput.trim() }),
+      });
+      const data = await res.json();
+      if (data.valid) {
+        setVerifyResult({
+          valid: true,
+          message: `VALID — ${data.type === "game" ? "Game Key" : "License Key"} · ${data.status}`,
+          type: data.type,
+        });
+      } else {
+        setVerifyResult({
+          valid: false,
+          message: `INVALID — ${data.error}`,
+        });
+      }
+    } catch {
+      setVerifyResult({
+        valid: false,
+        message: "FAILED — Could not verify key (database not available)",
+      });
+    } finally {
+      setVerifying(false);
     }
   };
 
@@ -165,6 +201,47 @@ export default function AdminPage() {
                 Generate Game Keys
               </Button>
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Verify Key section */}
+        <Card className="bg-[#141827] border-[#1e2240] mb-6">
+          <CardHeader>
+            <CardTitle className="text-base font-bold text-white flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-[#2ed573]" />
+              Verify Key
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex gap-2">
+              <Input
+                value={verifyInput}
+                onChange={e => setVerifyInput(e.target.value.toUpperCase())}
+                placeholder="Paste key here (e.g. XXXX-XXXX-XXXX-XXXX)"
+                className="bg-[#0d1020] border-[#1e2240] text-white font-mono"
+                onKeyDown={e => { if (e.key === "Enter") verifyKey(); }}
+              />
+              <Button
+                onClick={verifyKey}
+                disabled={verifying || !verifyInput.trim()}
+                className="bg-[#2ed573] hover:bg-[#3edd83] text-black font-bold"
+              >
+                {verifying ? <RefreshCw className="w-4 h-4 animate-spin" /> : <ShieldCheck className="w-4 h-4" />}
+                Verify
+              </Button>
+            </div>
+            {verifyResult && (
+              <div className={`rounded-lg px-3 py-2 flex items-center gap-2 text-sm ${
+                verifyResult.valid
+                  ? "bg-[#2ed573]/10 border border-[#2ed573]/30 text-[#2ed573]"
+                  : "bg-[#ff4757]/10 border border-[#ff4757]/30 text-[#ff4757]"
+              }`}>
+                {verifyResult.valid
+                  ? <ShieldCheck className="w-4 h-4 flex-shrink-0" />
+                  : <XCircle className="w-4 h-4 flex-shrink-0" />}
+                <span>{verifyResult.message}</span>
+              </div>
+            )}
           </CardContent>
         </Card>
 
