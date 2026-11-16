@@ -6,24 +6,15 @@ export const revalidate = 0;
 
 function generateKey(type: string): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  if (type === "game") {
-    // Activation codes: format XXXX-XXXX-XXXX (3 segments, 4 chars each)
-    const segs: string[] = [];
-    for (let s = 0; s < 3; s++) {
-      let seg = "";
-      for (let i = 0; i < 4; i++) seg += chars[Math.floor(Math.random() * chars.length)];
-      segs.push(seg);
-    }
-    return segs.join("-");
-  }
-  // License keys: format XXXX_XXXX_XXXX_XXXX (4 segments, 4 chars each, underscore separator)
+  // Both license and game keys use format: XXXX-XXXX-XXXX-XXXX (hyphen separator)
+  // This matches Revo Fixer's securityCodes format (verified from Firebase)
   const segs: string[] = [];
   for (let s = 0; s < 4; s++) {
     let seg = "";
     for (let i = 0; i < 4; i++) seg += chars[Math.floor(Math.random() * chars.length)];
     segs.push(seg);
   }
-  return segs.join("_");
+  return segs.join("-");
 }
 
 export async function POST(req: NextRequest) {
