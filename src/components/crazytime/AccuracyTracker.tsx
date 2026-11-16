@@ -35,7 +35,10 @@ export function AccuracyTracker({ accuracy: serverAccuracy, loading, error }: Pr
   // without needing a persistent server-side database.
   // Use mounted state to avoid hydration mismatch (localStorage only on client)
   const [mounted, setMounted] = useState(false);
-  useEffect(() => setMounted(true), []);
+  useEffect(() => {
+    const t = setTimeout(() => setMounted(true), 0);
+    return () => clearTimeout(t);
+  }, []);
   const clientTracker = useClientPredictionTracker();
   const accuracy = mounted ? clientTracker.accuracy : null;
   return (

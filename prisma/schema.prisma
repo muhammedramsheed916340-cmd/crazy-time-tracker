@@ -72,3 +72,18 @@ model PredictionRecord {
   @@index([status])
   @@index([sourceSpinId])
 }
+
+model LicenseKey {
+  id        String   @id @default(cuid())
+  key       String   @unique
+  type      String   @default("license")  // "license" or "game"
+  status    String   @default("active")   // "active", "used", "expired"
+  label     String?
+  userId    String?
+  createdAt DateTime @default(now())
+  usedAt    DateTime?
+  expiresAt DateTime?
+
+  @@index([type, status])
+  @@index([key])
+}
