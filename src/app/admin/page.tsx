@@ -6,7 +6,7 @@ import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Key, Gamepad2, Trash2, Copy, Check, RefreshCw, ArrowLeft } from "lucide-react";
+import { Key, Gamepad2, Trash2, Copy, Check, RefreshCw, ArrowLeft, Eye } from "lucide-react";
 
 interface KeyRecord {
   id: string;
@@ -108,9 +108,17 @@ export default function AdminPage() {
               <span className="text-[#448AFF]">Admin</span>
             </h1>
           </div>
-          <Button variant="ghost" size="sm" onClick={fetchKeys} disabled={loading} className="text-[#448AFF]">
-            <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
-          </Button>
+          <div className="flex items-center gap-2">
+            <a href="/" target="_blank" rel="noopener noreferrer">
+              <Button variant="ghost" size="sm" className="text-[#2ed573] hover:bg-[#2ed573]/10 gap-1">
+                <Eye className="w-4 h-4" />
+                <span className="hidden sm:inline">View Live Page</span>
+              </Button>
+            </a>
+            <Button variant="ghost" size="sm" onClick={fetchKeys} disabled={loading} className="text-[#448AFF]">
+              <RefreshCw className={`w-4 h-4 ${loading ? "animate-spin" : ""}`} />
+            </Button>
+          </div>
         </div>
 
         {/* Generate section */}
@@ -217,6 +225,19 @@ export default function AdminPage() {
             </Button>
           </div>
         )}
+
+        {/* Live page link */}
+        <div className="mt-6 text-center pb-6">
+          <a href="/" target="_blank" rel="noopener noreferrer">
+            <Button className="bg-[#2ed573] hover:bg-[#3edd83] text-black font-bold gap-2">
+              <Eye className="w-4 h-4" />
+              Open Live Prediction Page
+            </Button>
+          </a>
+          <p className="text-[10px] text-[#5a6a99] mt-2">
+            Opens the Crazy Time live prediction page in a new tab
+          </p>
+        </div>
       </div>
     </div>
   );
