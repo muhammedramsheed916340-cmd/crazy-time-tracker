@@ -13,7 +13,7 @@ import { SignalCard } from "@/components/crazytime/SignalCard";
 import { AccuracyTracker } from "@/components/crazytime/AccuracyTracker";
 import { BonusCenter } from "@/components/crazytime/BonusCenter";
 import { useCrazyTimeEvents, useCrazyTimeStats, useCrazyTimePredict } from "@/hooks/use-crazy-time";
-import { RefreshCw, Radio, Sparkles, Gift } from "lucide-react";
+import { RefreshCw, Radio, Sparkles, Gift, Settings } from "lucide-react";
 
 export default function Home() {
   // Live spin history - refresh every 8s (was 15s) for faster updates
@@ -50,13 +50,17 @@ export default function Home() {
             </div>
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
+            <a href="/admin" className="flex items-center gap-1 text-[11px] sm:text-xs bg-[rgba(255,45,85,0.1)] hover:bg-[rgba(255,45,85,0.2)] border border-[rgba(255,45,85,0.3)] text-[#ff2d55] transition px-2.5 py-1.5 rounded-md">
+              <Settings className="w-3.5 h-3.5" />
+              <span className="hidden sm:inline">Admin</span>
+            </a>
             <button
               onClick={() => setBonusOpen(true)}
               className="flex items-center gap-1 text-[11px] sm:text-xs bg-[rgba(255,215,0,0.1)] hover:bg-[rgba(255,215,0,0.2)] border border-[rgba(255,215,0,0.3)] text-[#FFD700] transition px-2.5 py-1.5 rounded-md"
               aria-label="Bonus Intelligence Center"
             >
               <Gift className="w-3.5 h-3.5" />
-              <span className="hidden sm:inline">Bonus Center</span>
+              <span className="hidden sm:inline">Bonus</span>
             </button>
             <button
               onClick={() => {
