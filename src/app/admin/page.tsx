@@ -201,6 +201,9 @@ export default function AdminPage() {
                 Generate Game Keys
               </Button>
             </div>
+            <p className="text-[10px] text-[#5a6a99] text-center">
+              License format: XXXX_XXXX_XXXX_XXXX (underscore) · Game format: XXXX-XXXX-XXXX (hyphen)
+            </p>
           </CardContent>
         </Card>
 

@@ -6,17 +6,24 @@ export const revalidate = 0;
 
 function generateKey(type: string): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-  const segments: string[] = [];
-  const segCount = type === "game" ? 3 : 4;
-  const segLen = type === "game" ? 5 : 4;
-  for (let s = 0; s < segCount; s++) {
-    let seg = "";
-    for (let i = 0; i < segLen; i++) {
-      seg += chars[Math.floor(Math.random() * chars.length)];
+  if (type === "game") {
+    // Activation codes: format XXXX-XXXX-XXXX (3 segments, 4 chars each)
+    const segs: string[] = [];
+    for (let s = 0; s < 3; s++) {
+      let seg = "";
+      for (let i = 0; i < 4; i++) seg += chars[Math.floor(Math.random() * chars.length)];
+      segs.push(seg);
     }
-    segments.push(seg);
+    return segs.join("-");
   }
-  return segments.join("-");
+  // License keys: format XXXX_XXXX_XXXX_XXXX (4 segments, 4 chars each, underscore separator)
+  const segs: string[] = [];
+  for (let s = 0; s < 4; s++) {
+    let seg = "";
+    for (let i = 0; i < 4; i++) seg += chars[Math.floor(Math.random() * chars.length)];
+    segs.push(seg);
+  }
+  return segs.join("_");
 }
 
 export async function POST(req: NextRequest) {
